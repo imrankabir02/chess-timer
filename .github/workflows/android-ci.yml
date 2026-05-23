@@ -27,6 +27,12 @@ jobs:
       # Fail gracefully if gradlew is not checked into the repository yet
       continue-on-error: true
 
+    - name: Decode Debug Keystore
+      run: |
+        if [ -f "debug.keystore.base64" ]; then
+          base64 -d debug.keystore.base64 > debug.keystore
+        fi
+
     - name: Run Unit Tests
       run: |
         if [ -f "./gradlew" ]; then
@@ -43,8 +49,22 @@ jobs:
           gradle assembleDebug
         fi
 
+    - name: Build Release APK
+      run: |
+        if [ -f "./gradlew" ]; then
+          ./gradlew assembleRelease
+        else
+          gradle assembleRelease
+        fi
+
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
       with:
         name: chess-timer-debug-apk
         path: app/build/outputs/apk/debug/app-debug.apk
+
+    - name: Upload Release APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: chess-timer-release-apk
+        path: app/build/outputs/apk/release/app-release.apk
