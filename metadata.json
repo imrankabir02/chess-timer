@@ -1,0 +1,6 @@
+{
+  "name": "Chess Clock",
+  "description": "A responsive, modern chess timer with customizable time controls, delay/increment styles (Fisher, Bronstein, Delay) and preset savings.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
