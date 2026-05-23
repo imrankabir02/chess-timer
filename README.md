@@ -1,21 +1,64 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Chess Clock ⏱️
 
-# Run and deploy your AI Studio app
+A beautiful, modern, and material-designed Chess Clock application for Android. Built with Jetpack Compose, Kotlin, and Room Database to keep track of your chess matches with customizable time control presets.
 
-This contains everything you need to run your app locally.
+[![Android CI/CD Pipeline](https://github.com/imrankabir02/chess-timer/actions/workflows/android-ci.yml/badge.svg)](https://github.com/imrankabir02/chess-timer/actions/workflows/android-ci.yml)
+[![Download APK](https://img.shields.io/badge/Download-APK-brightgreen.svg?style=flat-square)](https://github.com/imrankabir02/chess-timer/actions/runs/26327206712/artifacts/7175400862)
 
-View your app in AI Studio: https://ai.studio/apps/c186ebff-cdbc-4536-b5a9-1df14fdc59e2
+---
 
-## Run Locally
+## 📥 Download
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+Get the latest build artifact directly from the CI pipeline:
+* **[Download Latest Release APK](https://github.com/imrankabir02/chess-timer/actions/runs/26327206712/artifacts/7175400862)**
 
+---
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
+## ✨ Features
+
+- **Dual Clock Timers**: Responsive tap areas for both players, styled with material design themes.
+- **Custom Time Controls**: Create, edit, and save your favorite time controls (e.g., Blitz 3+2, Rapid 10+0, Bullet 1+0).
+- **Preset Management**: Built-in SQLite storage (powered by Room Database) to persist presets across sessions.
+- **Audio Feedback**: Subtle alerts and sound effects for turns, low time, and flags (game over).
+- **Haptic Feedback**: Responsive vibration cues for taps and state transitions.
+
+---
+
+## 🛠️ Tech Stack
+
+- **UI Framework**: [Jetpack Compose](https://developer.android.com/compose) (declarative UI toolkit)
+- **Programming Language**: [Kotlin](https://kotlinlang.org/)
+- **Database**: [Room SQLite Database](https://developer.android.com/training/data-storage/room)
+- **Architecture Pattern**: MVVM (Model-View-ViewModel) with Kotlin Coroutines
+- **Testing**: Robolectric, Roborazzi (Screenshot Testing), and JUnit
+
+---
+
+## 🚀 Run Locally
+
+### Prerequisites
+- [Android Studio Jellyfish+](https://developer.android.com/studio)
+- JDK 17
+
+### Steps
+1. **Clone the Repository**:
+   ```bash
+   git clone https://github.com/imrankabir02/chess-timer.git
+   cd chess-timer
+   ```
+2. **Open in Android Studio**:
+   - Go to `File` > `Open...` and select the cloned directory.
+   - Let Gradle sync and resolve project configurations.
+3. **Configure Environment (Optional)**:
+   - Create a `.env` file in the root directory (refer to `.env.example`).
+4. **Build and Run**:
+   - Select your target device/emulator and click the **Run** button (or press `Shift + F10`).
+
+---
+
+## 🧪 Running Tests
+
+To run local unit and screenshot tests:
+```bash
+./gradlew testDebugUnitTest
+```
