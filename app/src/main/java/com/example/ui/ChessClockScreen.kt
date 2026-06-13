@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.HourglassBottom
@@ -634,32 +635,82 @@ fun CustomClockBuilderDialog(
                     text = "Minutes: ${minutes.toInt()}",
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                 )
-                Slider(
-                    value = minutes,
-                    onValueChange = { minutes = it },
-                    valueRange = 0f..180f,
-                    colors = SliderDefaults.colors(
-                        activeTrackColor = Color(0xFFD0BCFF),
-                        thumbColor = Color(0xFFD0BCFF)
-                    ),
-                    modifier = Modifier.padding(bottom = 16.dp).testTag("minutes_slider")
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+                ) {
+                    IconButton(
+                        onClick = { if (minutes > 0f) minutes = (minutes - 1f).coerceAtLeast(0f) },
+                        modifier = Modifier.size(36.dp).testTag("minutes_minus")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Remove,
+                            contentDescription = "Decrease minutes",
+                            tint = Color(0xFFD0BCFF)
+                        )
+                    }
+                    Slider(
+                        value = minutes,
+                        onValueChange = { minutes = it },
+                        valueRange = 0f..180f,
+                        colors = SliderDefaults.colors(
+                            activeTrackColor = Color(0xFFD0BCFF),
+                            thumbColor = Color(0xFFD0BCFF)
+                        ),
+                        modifier = Modifier.weight(1f).testTag("minutes_slider")
+                    )
+                    IconButton(
+                        onClick = { if (minutes < 180f) minutes = (minutes + 1f).coerceAtMost(180f) },
+                        modifier = Modifier.size(36.dp).testTag("minutes_plus")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Increase minutes",
+                            tint = Color(0xFFD0BCFF)
+                        )
+                    }
+                }
 
                 // Seconds slider
                 Text(
                     text = "Seconds: ${seconds.toInt()}",
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                 )
-                Slider(
-                    value = seconds,
-                    onValueChange = { seconds = it },
-                    valueRange = 0f..59f,
-                    colors = SliderDefaults.colors(
-                        activeTrackColor = Color(0xFFD0BCFF),
-                        thumbColor = Color(0xFFD0BCFF)
-                    ),
-                    modifier = Modifier.padding(bottom = 16.dp).testTag("seconds_slider")
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+                ) {
+                    IconButton(
+                        onClick = { if (seconds > 0f) seconds = (seconds - 1f).coerceAtLeast(0f) },
+                        modifier = Modifier.size(36.dp).testTag("seconds_minus")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Remove,
+                            contentDescription = "Decrease seconds",
+                            tint = Color(0xFFD0BCFF)
+                        )
+                    }
+                    Slider(
+                        value = seconds,
+                        onValueChange = { seconds = it },
+                        valueRange = 0f..59f,
+                        colors = SliderDefaults.colors(
+                            activeTrackColor = Color(0xFFD0BCFF),
+                            thumbColor = Color(0xFFD0BCFF)
+                        ),
+                        modifier = Modifier.weight(1f).testTag("seconds_slider")
+                    )
+                    IconButton(
+                        onClick = { if (seconds < 59f) seconds = (seconds + 1f).coerceAtMost(59f) },
+                        modifier = Modifier.size(36.dp).testTag("seconds_plus")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Increase seconds",
+                            tint = Color(0xFFD0BCFF)
+                        )
+                    }
+                }
 
                 HorizontalDivider(color = Color.White.copy(alpha = 0.1f), modifier = Modifier.padding(vertical = 12.dp))
 
@@ -728,16 +779,41 @@ fun CustomClockBuilderDialog(
                         text = "Fischer Increment (seconds): ${incSecs.toInt()}s",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
-                    Slider(
-                        value = incSecs,
-                        onValueChange = { incSecs = it },
-                        valueRange = 0f..60f,
-                        colors = SliderDefaults.colors(
-                            activeTrackColor = Color(0xFFD0BCFF),
-                            thumbColor = Color(0xFFD0BCFF)
-                        ),
-                        modifier = Modifier.padding(bottom = 16.dp).testTag("increment_slider")
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+                    ) {
+                        IconButton(
+                            onClick = { if (incSecs > 0f) incSecs = (incSecs - 1f).coerceAtLeast(0f) },
+                            modifier = Modifier.size(36.dp).testTag("increment_minus")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Remove,
+                                contentDescription = "Decrease increment",
+                                tint = Color(0xFFD0BCFF)
+                            )
+                        }
+                        Slider(
+                            value = incSecs,
+                            onValueChange = { incSecs = it },
+                            valueRange = 0f..60f,
+                            colors = SliderDefaults.colors(
+                                activeTrackColor = Color(0xFFD0BCFF),
+                                thumbColor = Color(0xFFD0BCFF)
+                            ),
+                            modifier = Modifier.weight(1f).testTag("increment_slider")
+                        )
+                        IconButton(
+                            onClick = { if (incSecs < 60f) incSecs = (incSecs + 1f).coerceAtMost(60f) },
+                            modifier = Modifier.size(36.dp).testTag("increment_plus")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "Increase increment",
+                                tint = Color(0xFFD0BCFF)
+                            )
+                        }
+                    }
                 }
 
                 if (timingMode == TimingStyle.DELAY) {
@@ -745,16 +821,41 @@ fun CustomClockBuilderDialog(
                         text = "Simple USCF delay (seconds): ${delaySecs.toInt()}s",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
-                    Slider(
-                        value = delaySecs,
-                        onValueChange = { delaySecs = it },
-                        valueRange = 0f..60f,
-                        colors = SliderDefaults.colors(
-                            activeTrackColor = Color(0xFFD0BCFF),
-                            thumbColor = Color(0xFFD0BCFF)
-                        ),
-                        modifier = Modifier.padding(bottom = 16.dp).testTag("delay_slider")
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+                    ) {
+                        IconButton(
+                            onClick = { if (delaySecs > 0f) delaySecs = (delaySecs - 1f).coerceAtLeast(0f) },
+                            modifier = Modifier.size(36.dp).testTag("delay_minus")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Remove,
+                                contentDescription = "Decrease delay",
+                                tint = Color(0xFFD0BCFF)
+                            )
+                        }
+                        Slider(
+                            value = delaySecs,
+                            onValueChange = { delaySecs = it },
+                            valueRange = 0f..60f,
+                            colors = SliderDefaults.colors(
+                                activeTrackColor = Color(0xFFD0BCFF),
+                                thumbColor = Color(0xFFD0BCFF)
+                            ),
+                            modifier = Modifier.weight(1f).testTag("delay_slider")
+                        )
+                        IconButton(
+                            onClick = { if (delaySecs < 60f) delaySecs = (delaySecs + 1f).coerceAtMost(60f) },
+                            modifier = Modifier.size(36.dp).testTag("delay_plus")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "Increase delay",
+                                tint = Color(0xFFD0BCFF)
+                            )
+                        }
+                    }
                 }
 
                 // Custom Title (Optional)
