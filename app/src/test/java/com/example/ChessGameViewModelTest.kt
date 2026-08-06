@@ -2,15 +2,18 @@ package com.example
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import com.example.chess.ChessBotLevel
 import com.example.chess.GameEndReason
 import com.example.chess.GameOutcome
 import com.example.chess.Piece
 import com.example.chess.PieceColor
 import com.example.chess.PieceType
 import com.example.chess.Square
+import com.example.model.ChessOpponent
 import com.example.model.GameTimeControl
 import com.example.model.TimingStyle
 import com.example.viewmodel.ChessGameViewModel
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -248,6 +251,90 @@ class ChessGameViewModelTest {
         viewModel.flipBoard()
         assertFalse(viewModel.state.value.boardFlipped)
     }
+
+    // region Computer opponent
+
+    /** Plays a move and waits for the computer's reply, the way the screen would. */
+    private fun tapMoveAndWaitForReply(from: String, to: String) {
+        tapMove(from, to)
+        runBlocking { viewModel.awaitComputerMove() }
+    }
+
+    @Test
+    fun theComputerAnswersYourMove() {
+        viewModel.newGame(untimed, ChessOpponent.computer(ChessBotLevel.EASY))
+        tapMoveAndWaitForReply("e2", "e4")
+
+        val state = viewModel.state.value
+        assertEquals("the computer should have replied", 2, state.game.moveCount)
+        assertEquals(PieceColor.WHITE, state.sideToMove)
+        assertFalse(state.isThinking)
+        assertTrue(state.isComputer(PieceColor.BLACK))
+        assertFalse(state.isComputer(PieceColor.WHITE))
+    }
+
+    @Test
+    fun theComputerOpensTheGameWhenItHasWhite() {
+        viewModel.newGame(
+            untimed,
+            ChessOpponent.computer(ChessBotLevel.EASY, computerColor = PieceColor.WHITE)
+        )
+        runBlocking { viewModel.awaitComputerMove() }
+
+        val state = viewModel.state.value
+        assertEquals(1, state.game.moveCount)
+        assertEquals(PieceColor.BLACK, state.sideToMove)
+        assertTrue("the player sits behind their own pieces", state.boardFlipped)
+    }
+
+    @Test
+    fun theComputersPiecesCannotBeMovedByHand() {
+        viewModel.newGame(untimed, ChessOpponent.computer(ChessBotLevel.EASY))
+        tapMove("e2", "e4")
+
+        // It is the computer's move now, so the board belongs to it.
+        assertTrue(viewModel.state.value.isComputerToMove)
+        viewModel.onSquareTapped(Square.fromName("e7"))
+        assertEquals(Square.NONE, viewModel.state.value.selectedSquare)
+        tapMove("d7", "d5")
+
+        runBlocking { viewModel.awaitComputerMove() }
+        assertEquals("only the two moves should have been played", 2, viewModel.state.value.game.moveCount)
+    }
+
+    @Test
+    fun takingBackAgainstTheComputerHandsTheMoveBackToYou() {
+        viewModel.newGame(untimed, ChessOpponent.computer(ChessBotLevel.EASY))
+        tapMoveAndWaitForReply("e2", "e4")
+        assertEquals(2, viewModel.state.value.game.moveCount)
+
+        // One tap takes back the pair, not just the computer's reply.
+        viewModel.undo()
+        runBlocking { viewModel.awaitComputerMove() }
+
+        val state = viewModel.state.value
+        assertEquals(0, state.game.moveCount)
+        assertEquals(PieceColor.WHITE, state.sideToMove)
+        assertFalse(state.isComputerToMove)
+    }
+
+    @Test
+    fun switchingBackToTwoPlayersLeavesBothSidesToThePlayers() {
+        viewModel.newGame(untimed, ChessOpponent.computer(ChessBotLevel.EASY))
+        tapMoveAndWaitForReply("e2", "e4")
+
+        viewModel.newGame(untimed, ChessOpponent.TWO_PLAYERS)
+        tapMove("e2", "e4")
+        tapMove("e7", "e5")
+
+        val state = viewModel.state.value
+        assertEquals(2, state.game.moveCount)
+        assertEquals(listOf("e4", "e5"), state.game.history.map { it.san })
+        assertFalse(state.opponent.isComputer)
+        assertFalse(state.isComputerToMove)
+    }
+
+    // endregion
 
     @Test
     fun startingANewGameClearsEverything() {

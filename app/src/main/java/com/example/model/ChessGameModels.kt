@@ -1,5 +1,6 @@
 package com.example.model
 
+import com.example.chess.ChessBotLevel
 import com.example.chess.ChessGame
 import com.example.chess.PieceColor
 import com.example.chess.PieceType
@@ -7,6 +8,30 @@ import com.example.chess.Square
 
 /** A pawn reached the last rank and is waiting for the player to pick a piece. */
 data class PendingPromotion(val from: Int, val to: Int, val color: PieceColor)
+
+/**
+ * Who is on the other side of the board: a second player sharing the device, or the computer at
+ * one of its three levels.
+ */
+data class ChessOpponent(
+    val isComputer: Boolean = false,
+    val level: ChessBotLevel = ChessBotLevel.MEDIUM,
+    /** The side the computer plays. Meaningless — and ignored — in a two-player game. */
+    val computerColor: PieceColor = PieceColor.BLACK
+) {
+    /** The colour the computer plays, or null when two people are playing. */
+    val botColor: PieceColor?
+        get() = if (isComputer) computerColor else null
+
+    fun isBot(color: PieceColor): Boolean = botColor == color
+
+    companion object {
+        val TWO_PLAYERS = ChessOpponent()
+
+        fun computer(level: ChessBotLevel, computerColor: PieceColor = PieceColor.BLACK) =
+            ChessOpponent(isComputer = true, level = level, computerColor = computerColor)
+    }
+}
 
 /** The time control a game is played with. */
 data class GameTimeControl(
@@ -37,6 +62,9 @@ data class GameTimeControl(
 data class ChessGameUiState(
     val game: ChessGame = ChessGame.new(),
     val timeControl: GameTimeControl = GameTimeControl.DEFAULT,
+    val opponent: ChessOpponent = ChessOpponent.TWO_PLAYERS,
+    /** True while the computer is working out its move. */
+    val isThinking: Boolean = false,
     val whiteTimeMs: Long = GameTimeControl.DEFAULT.initialTimeMs,
     val blackTimeMs: Long = GameTimeControl.DEFAULT.initialTimeMs,
     val delayBufferMs: Long = 0L,
@@ -65,6 +93,12 @@ data class ChessGameUiState(
     /** A started game whose clock has been halted: the board is frozen until it resumes. */
     val isPaused: Boolean
         get() = clockStarted && !clockRunning && !isOver && !timeControl.isUnlimited
+
+    /** The computer is on move, so the board belongs to it until it has played. */
+    val isComputerToMove: Boolean
+        get() = !isOver && opponent.isBot(sideToMove)
+
+    fun isComputer(color: PieceColor): Boolean = opponent.isBot(color)
 
     fun timeFor(color: PieceColor): Long =
         if (color == PieceColor.WHITE) whiteTimeMs else blackTimeMs

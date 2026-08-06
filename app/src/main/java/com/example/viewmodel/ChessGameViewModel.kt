@@ -11,6 +11,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.chess.ChessBot
 import com.example.chess.ChessGame
 import com.example.chess.Move
 import com.example.chess.PieceColor
@@ -20,6 +21,7 @@ import com.example.data.AppDatabase
 import com.example.data.TimePreset
 import com.example.data.TimePresetRepository
 import com.example.model.ChessGameUiState
+import com.example.model.ChessOpponent
 import com.example.model.GameTimeControl
 import com.example.model.PendingPromotion
 import com.example.model.TimingStyle
@@ -64,6 +66,9 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
 
     private var timerJob: Job? = null
 
+    /** The computer's search, running off the main thread while the board waits for it. */
+    private var botJob: Job? = null
+
     private val toneGenerator = try {
         ToneGenerator(AudioManager.STREAM_MUSIC, 70)
     } catch (e: Exception) {
@@ -80,8 +85,12 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
 
     // region Game lifecycle
 
-    fun newGame(timeControl: GameTimeControl = _state.value.timeControl) {
+    fun newGame(
+        timeControl: GameTimeControl = _state.value.timeControl,
+        opponent: ChessOpponent = _state.value.opponent
+    ) {
         stopClock()
+        cancelComputerMove()
         val startTime = if (timeControl.isUnlimited) 0L else timeControl.initialTimeMs
         clockHistory.clear()
         clockHistory.add(startTime to startTime)
@@ -89,18 +98,21 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
             ChessGameUiState(
                 game = ChessGame.new(),
                 timeControl = timeControl,
+                opponent = opponent,
                 whiteTimeMs = startTime,
                 blackTimeMs = startTime,
                 delayBufferMs = initialDelayFor(timeControl),
                 clockRunning = false,
                 clockStarted = false,
-                boardFlipped = false,
-                autoFlip = current.autoFlip,
+                // Facing the computer, the player always sits behind their own pieces.
+                boardFlipped = opponent.botColor == PieceColor.WHITE,
+                autoFlip = current.autoFlip && !opponent.isComputer,
                 soundEnabled = current.soundEnabled,
                 vibrationEnabled = current.vibrationEnabled
             )
         }
         vibrate(30)
+        maybeStartComputerMove()
     }
 
     fun selectTimeControl(timeControl: GameTimeControl) = newGame(timeControl)
@@ -112,6 +124,8 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
     fun onSquareTapped(square: Int) {
         val current = _state.value
         if (current.isOver || current.pendingPromotion != null || current.isPaused) return
+        // The computer's pieces are not the player's to move.
+        if (current.isComputerToMove) return
         if (!Square.isValid(square)) return
 
         if (current.selectedSquare == square) {
@@ -215,6 +229,69 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
         announceMove(played, move)
 
         if (clockShouldRun) restartClockLoop()
+        maybeStartComputerMove()
+    }
+
+    // endregion
+
+    // region Computer opponent
+
+    /**
+     * Hands the position to [ChessBot] when it is the computer's turn. The search runs off the main
+     * thread and its move is only played if the board it was given is still the board on screen —
+     * so a take-back or a new game while it thinks simply discards the result.
+     */
+    private fun maybeStartComputerMove() {
+        val current = _state.value
+        if (!current.isComputerToMove || current.isPaused || current.pendingPromotion != null) return
+
+        val game = current.game
+        val level = current.opponent.level
+        val budget = thinkingBudgetFor(current)
+        botJob?.cancel()
+        _state.update {
+            it.copy(isThinking = true, selectedSquare = Square.NONE, legalTargets = emptySet())
+        }
+        botJob = viewModelScope.launch(Dispatchers.Default) {
+            val startedAt = SystemClock.elapsedRealtime()
+            val move = ChessBot.chooseMove(game, level, timeBudgetMs = budget)
+            // A move that lands the instant the player lets go reads as a glitch rather than a reply.
+            val pause = minOf(MIN_THINK_MS, budget)
+            delay((pause - (SystemClock.elapsedRealtime() - startedAt)).coerceAtLeast(0L))
+
+            _state.update { it.copy(isThinking = false) }
+            // Anything that moved the game on while the search ran wins: its move is stale.
+            if (move != null && _state.value.game === game) applyMove(move)
+        }
+    }
+
+    /**
+     * How long the computer may think for: its level's own budget, cut down to a share of the clock
+     * it is playing on. A one-minute game gets a couple of seconds' thought on the first move and
+     * less on every move after it, so the computer plays shallower rather than losing on time.
+     */
+    private fun thinkingBudgetFor(state: ChessGameUiState): Long {
+        val level = state.opponent.level
+        if (state.timeControl.isUnlimited) return level.timeBudgetMs
+        val remaining = state.timeFor(state.opponent.computerColor)
+        val increment = when (state.timeControl.timingStyle) {
+            TimingStyle.INCREMENT -> state.timeControl.incrementSeconds * 1_000L
+            TimingStyle.DELAY -> state.timeControl.delaySeconds * 1_000L
+            TimingStyle.NONE -> 0L
+        }
+        return (remaining / MOVES_TO_BUDGET_FOR + increment * 4 / 5)
+            .coerceIn(MIN_BUDGET_MS, level.timeBudgetMs)
+    }
+
+    private fun cancelComputerMove() {
+        botJob?.cancel()
+        botJob = null
+        if (_state.value.isThinking) _state.update { it.copy(isThinking = false) }
+    }
+
+    /** Test hook: waits for a move the computer is working on, if there is one. */
+    internal suspend fun awaitComputerMove() {
+        botJob?.join()
     }
 
     // endregion
@@ -222,8 +299,20 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
     // region Controls
 
     fun undo() {
+        cancelComputerMove()
+        if (!undoOnce()) return
+        // Against the computer, taking back one half-move would only hand the position straight
+        // back to it, so its reply comes off too.
+        if (_state.value.isComputerToMove && _state.value.game.moveCount > 0) undoOnce()
+        vibrate(25)
+        // Unless the computer has White and the board is back to the start, where it is on move.
+        maybeStartComputerMove()
+    }
+
+    /** Steps back one half-move — or one declared result. False when there was nothing to undo. */
+    private fun undoOnce(): Boolean {
         val current = _state.value
-        val previous = current.game.undo() ?: return
+        val previous = current.game.undo() ?: return false
         stopClock()
         // Taking back a declared result leaves the move list — and so the clocks — untouched.
         val movesWereTakenBack = previous.moveCount < current.game.moveCount
@@ -246,12 +335,13 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
                 resultDismissed = false
             )
         }
-        vibrate(25)
+        return true
     }
 
     fun pauseClock() {
         if (!_state.value.clockRunning) return
         stopClock()
+        cancelComputerMove()
         _state.update { it.copy(clockRunning = false) }
         vibrate(40)
     }
@@ -262,6 +352,7 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
         if (!current.clockStarted || current.clockRunning) return
         _state.update { it.copy(clockRunning = true) }
         restartClockLoop()
+        maybeStartComputerMove()
     }
 
     fun toggleClock() {
@@ -272,6 +363,7 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
         val current = _state.value
         if (current.isOver) return
         stopClock()
+        cancelComputerMove()
         _state.update {
             it.copy(game = it.game.resign(color), clockRunning = false, resultDismissed = false)
         }
@@ -282,6 +374,7 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
         val current = _state.value
         if (current.isOver) return
         stopClock()
+        cancelComputerMove()
         _state.update {
             it.copy(game = it.game.agreeDraw(), clockRunning = false, resultDismissed = false)
         }
@@ -451,6 +544,7 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
     override fun onCleared() {
         super.onCleared()
         stopClock()
+        botJob?.cancel()
         try {
             toneGenerator?.release()
         } catch (e: Exception) {
@@ -461,6 +555,14 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
     companion object {
         private const val TICK_MS = 40L
         private const val LOW_TIME_MS = 10_000L
+
+        /** The shortest a computer move may take, so replies do not appear instantly. */
+        private const val MIN_THINK_MS = 350L
+
+        /** The clock is spread over this many moves when working out how long to think. */
+        private const val MOVES_TO_BUDGET_FOR = 30L
+
+        private const val MIN_BUDGET_MS = 120L
     }
 }
 

@@ -66,9 +66,11 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.example.chess.ChessBotLevel
 import com.example.chess.GameEndReason
 import com.example.chess.GameOutcome
 import com.example.chess.GameResult
@@ -77,6 +79,7 @@ import com.example.chess.PieceColor
 import com.example.chess.PieceType
 import com.example.chess.Square
 import com.example.model.ChessGameUiState
+import com.example.model.ChessOpponent
 import com.example.model.GameTimeControl
 import com.example.model.PendingPromotion
 import com.example.model.TimingStyle
@@ -86,6 +89,7 @@ import com.example.ui.theme.GeometricDarkBackground
 import com.example.ui.theme.GeometricPurpleDark
 import com.example.ui.theme.GeometricSurfaceDark
 import com.example.viewmodel.ChessGameViewModel
+import kotlin.random.Random
 
 private val LowTimeRed = Color(0xFFFF5252)
 
@@ -154,7 +158,7 @@ fun ChessGameScreen(
             } else {
                 Square.NONE
             },
-            enabled = !state.isOver && !state.isPaused,
+            enabled = !state.isOver && !state.isPaused && !state.isComputerToMove,
             onSquareClick = { viewModel.onSquareTapped(it) }
         )
 
@@ -196,10 +200,11 @@ fun ChessGameScreen(
         NewGameDialog(
             timeControls = timeControls,
             current = state.timeControl,
+            currentOpponent = state.opponent,
             autoFlip = state.autoFlip,
             onToggleAutoFlip = { viewModel.toggleAutoFlip() },
-            onStart = {
-                viewModel.newGame(it)
+            onStart = { timeControl, opponent ->
+                viewModel.newGame(timeControl, opponent)
                 showNewGame = false
             },
             onDismiss = { showNewGame = false }
@@ -207,12 +212,14 @@ fun ChessGameScreen(
     }
 
     if (showResignConfirm) {
+        // Against the computer it is always the player who is giving up, whoever is on move.
+        val resigning = state.opponent.botColor?.opposite ?: state.sideToMove
         ConfirmDialog(
             title = "Resign?",
-            message = "${state.sideToMove.displayName} resigns and the game ends.",
+            message = "${resigning.displayName} resigns and the game ends.",
             confirmLabel = "Resign",
             onConfirm = {
-                viewModel.resign(state.sideToMove)
+                viewModel.resign(resigning)
                 showResignConfirm = false
             },
             onDismiss = { showResignConfirm = false }
@@ -274,9 +281,11 @@ private fun GameTopBar(
                 modifier = Modifier.testTag("game_status_text")
             )
             Text(
-                text = state.timeControl.describe(),
+                text = "${state.opponent.describe()} · ${state.timeControl.describe()}",
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = 0.55f)
+                color = Color.White.copy(alpha = 0.55f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
 
@@ -362,6 +371,18 @@ private fun PlayerBar(
                                     fontFamily = FontFamily.Monospace
                                 ),
                                 color = Color.White.copy(alpha = 0.7f)
+                            )
+                        }
+                        state.seatLabel(color)?.let { seat ->
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = seat,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = 1.sp
+                                ),
+                                color = Color.White.copy(alpha = 0.45f),
+                                modifier = Modifier.testTag("seat_${color.name.lowercase()}")
                             )
                         }
                     }
@@ -525,13 +546,17 @@ private fun GameControlBar(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        TextButton(
-            onClick = onOfferDraw,
-            enabled = !state.isOver,
-            colors = ButtonDefaults.textButtonColors(contentColor = GeometricAccentLavender),
-            modifier = Modifier.testTag("draw_button")
-        ) {
-            Text("Draw", fontWeight = FontWeight.Bold)
+        // There is nobody to agree a draw with when the opponent is the computer; the rules-based
+        // draws (repetition, fifty moves, dead position) still end the game on their own.
+        if (!state.opponent.isComputer) {
+            TextButton(
+                onClick = onOfferDraw,
+                enabled = !state.isOver,
+                colors = ButtonDefaults.textButtonColors(contentColor = GeometricAccentLavender),
+                modifier = Modifier.testTag("draw_button")
+            ) {
+                Text("Draw", fontWeight = FontWeight.Bold)
+            }
         }
 
         TextButton(
@@ -642,12 +667,16 @@ private fun PromotionDialog(
 private fun NewGameDialog(
     timeControls: List<GameTimeControl>,
     current: GameTimeControl,
+    currentOpponent: ChessOpponent,
     autoFlip: Boolean,
     onToggleAutoFlip: () -> Unit,
-    onStart: (GameTimeControl) -> Unit,
+    onStart: (GameTimeControl, ChessOpponent) -> Unit,
     onDismiss: () -> Unit
 ) {
     var selected by remember { mutableStateOf(current) }
+    var isComputer by remember { mutableStateOf(currentOpponent.isComputer) }
+    var level by remember { mutableStateOf(currentOpponent.level) }
+    var side by remember { mutableStateOf(HumanSide.of(currentOpponent)) }
 
     Dialog(onDismissRequest = onDismiss) {
         DialogCard {
@@ -657,15 +686,73 @@ private fun NewGameDialog(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Pick a time control. Presets are shared with the clock mode.",
+                text = "Pick an opponent and a time control. Presets are shared with the clock mode.",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.White.copy(alpha = 0.6f)
             )
+
             Spacer(modifier = Modifier.height(14.dp))
 
+            SectionLabel("Opponent")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                ChoiceChip(
+                    label = "Human",
+                    selected = !isComputer,
+                    testTag = "opponent_human",
+                    modifier = Modifier.weight(1f),
+                    onClick = { isComputer = false }
+                )
+                ChessBotLevel.entries.forEach { option ->
+                    ChoiceChip(
+                        label = option.label,
+                        selected = isComputer && level == option,
+                        testTag = "opponent_${option.name.lowercase()}",
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            isComputer = true
+                            level = option
+                        }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = if (isComputer) level.blurb else "Two players sharing the device",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.5f),
+                modifier = Modifier.testTag("opponent_blurb")
+            )
+
+            if (isComputer) {
+                Spacer(modifier = Modifier.height(14.dp))
+                SectionLabel("You play")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    HumanSide.entries.forEach { option ->
+                        ChoiceChip(
+                            label = option.label,
+                            selected = side == option,
+                            testTag = "side_${option.name.lowercase()}",
+                            modifier = Modifier.weight(1f),
+                            onClick = { side = option }
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            SectionLabel("Time control")
+
             Column(
+                // The side picker only appears against the computer, so the list gives up its room.
                 modifier = Modifier
-                    .height(260.dp)
+                    .height(if (isComputer) 150.dp else 210.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -709,32 +796,39 @@ private fun NewGameDialog(
                 }
             }
 
-            HorizontalDivider(
-                color = Color.White.copy(alpha = 0.1f),
-                modifier = Modifier.padding(vertical = 12.dp)
-            )
+            // Passing the phone back and forth is a two-player problem; the computer never turns it.
+            if (!isComputer) {
+                HorizontalDivider(
+                    color = Color.White.copy(alpha = 0.1f),
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Rotate board each move", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    Text(
-                        text = "For passing one phone back and forth",
-                        fontSize = 11.sp,
-                        color = Color.White.copy(alpha = 0.5f)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Rotate board each move",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = "For passing one phone back and forth",
+                            fontSize = 11.sp,
+                            color = Color.White.copy(alpha = 0.5f)
+                        )
+                    }
+                    Switch(
+                        checked = autoFlip,
+                        onCheckedChange = { onToggleAutoFlip() },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = GeometricPurpleDark,
+                            checkedTrackColor = GeometricAccentLavender
+                        ),
+                        modifier = Modifier.testTag("auto_flip_switch")
                     )
                 }
-                Switch(
-                    checked = autoFlip,
-                    onCheckedChange = { onToggleAutoFlip() },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = GeometricPurpleDark,
-                        checkedTrackColor = GeometricAccentLavender
-                    ),
-                    modifier = Modifier.testTag("auto_flip_switch")
-                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -748,7 +842,7 @@ private fun NewGameDialog(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(
-                    onClick = { onStart(selected) },
+                    onClick = { onStart(selected, opponentFor(isComputer, level, side)) },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = GeometricAccentLavender,
                         contentColor = GeometricPurpleDark
@@ -760,6 +854,78 @@ private fun NewGameDialog(
                 }
             }
         }
+    }
+}
+
+/** Which colour the player takes when the computer is the opponent. */
+private enum class HumanSide(val label: String) {
+    WHITE("White"),
+    BLACK("Black"),
+    RANDOM("Random");
+
+    companion object {
+        fun of(opponent: ChessOpponent): HumanSide =
+            if (opponent.computerColor == PieceColor.WHITE) BLACK else WHITE
+    }
+}
+
+private fun opponentFor(isComputer: Boolean, level: ChessBotLevel, side: HumanSide): ChessOpponent {
+    if (!isComputer) return ChessOpponent.TWO_PLAYERS
+    val humanColor = when (side) {
+        HumanSide.WHITE -> PieceColor.WHITE
+        HumanSide.BLACK -> PieceColor.BLACK
+        HumanSide.RANDOM -> if (Random.nextBoolean()) PieceColor.WHITE else PieceColor.BLACK
+    }
+    return ChessOpponent.computer(level, computerColor = humanColor.opposite)
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text = text.uppercase(),
+        style = MaterialTheme.typography.labelSmall.copy(
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.6.sp
+        ),
+        color = Color.White.copy(alpha = 0.45f),
+        modifier = Modifier.padding(bottom = 8.dp)
+    )
+}
+
+@Composable
+private fun ChoiceChip(
+    label: String,
+    selected: Boolean,
+    testTag: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (selected) {
+                    GeometricAccentLavender.copy(alpha = 0.18f)
+                } else {
+                    Color.White.copy(alpha = 0.04f)
+                }
+            )
+            .border(
+                width = 1.dp,
+                color = if (selected) GeometricAccentLavender else Color.Transparent,
+                shape = RoundedCornerShape(12.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp)
+            .testTag(testTag),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (selected) GeometricAccentLavender else Color.White.copy(alpha = 0.75f)
+        )
     }
 }
 
@@ -888,11 +1054,26 @@ internal fun GameTimeControl.describe(): String {
     }
 }
 
+internal fun ChessOpponent.describe(): String =
+    if (isComputer) {
+        "Computer · ${level.label} · plays ${computerColor.displayName}"
+    } else {
+        "Two players"
+    }
+
+/** Who is sitting behind a colour, when one of the two sides is the computer. */
+internal fun ChessGameUiState.seatLabel(color: PieceColor): String? = when {
+    !opponent.isComputer -> null
+    isComputer(color) -> "COMPUTER · ${opponent.level.label.uppercase()}"
+    else -> "YOU"
+}
+
 internal fun ChessGameUiState.statusLine(): String {
     val result = game.result
     return when {
         result != null -> "${result.headline()} · ${result.scoreLine}"
         isPaused -> "Paused"
+        isThinking -> "Computer is thinking…"
         game.isCheck -> "${sideToMove.displayName} is in check"
         else -> "${sideToMove.displayName} to move"
     }

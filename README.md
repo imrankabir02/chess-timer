@@ -1,6 +1,6 @@
 # Chess Clock ⏱️♟️🎲
 
-A beautiful, modern, material-designed Android board-game app. **Play a complete game of chess**, **play Ludo against the computer**, or use the device as a pure tournament clock for a physical board. Built with Jetpack Compose, Kotlin, and Room Database.
+A beautiful, modern, material-designed Android board-game app. **Play a complete game of chess** — against another person or a computer opponent at three levels — **play Ludo against the computer**, or use the device as a pure tournament clock for a physical board. Built with Jetpack Compose, Kotlin, and Room Database.
 
 [![Android CI/CD Pipeline](https://github.com/imrankabir02/chess-timer/actions/workflows/android-ci.yml/badge.svg)](https://github.com/imrankabir02/chess-timer/actions/workflows/android-ci.yml)
 [![Download APK](https://img.shields.io/badge/Download-APK-brightgreen.svg?style=flat-square)](https://github.com/imrankabir02/chess-timer/actions/runs/26327206712/artifacts/7175400862)
@@ -20,8 +20,9 @@ The home screen offers three modes.
 
 ### ♟️ Play chess
 
-A complete, rules-correct game of chess for two players on one device.
+A complete, rules-correct game of chess, against the person opposite you or against the computer.
 
+- **Three levels of computer opponent**: pick **Easy**, **Medium** or **Hard** when you start a game, and choose whether you take White, Black or a random colour. Easy looks a single move ahead and will hand you pieces; Medium looks three moves ahead and plays every exchange out before it judges the position; Hard searches as deep as a couple of seconds allow and does not miss the tactics the other two do. The computer thinks on its own clock and off the UI thread, so the board never freezes, and taking a move back rewinds its reply along with yours.
 - **Every rule implemented**: legal move generation with pins and checks, castling (including the "may not castle through check" restrictions), en passant, and under-promotion to any piece.
 - **All the endings**: checkmate, stalemate, the fifty-move rule, threefold repetition, insufficient material, resignation, agreed draws, and flag fall — including the FIDE rule that a flag fall against a player who cannot possibly mate is only a draw.
 - **Tap to move**: tap a piece to see its legal destinations, tap a destination to play. Last move, selection and check are highlighted on the board.
@@ -77,9 +78,24 @@ unit tested directly on the JVM:
 | `Position.kt` | Immutable board, attack detection, legal move generation, FEN in and out |
 | `San.kt` | Standard algebraic notation, written and parsed |
 | `ChessGame.kt` | Move history, undo, and every way a game can end |
+| `ChessBot.kt` | The computer opponent: the search, the evaluation and the three levels |
 
 Positions are immutable — playing a move returns a new one — which is what makes undo, threefold
 repetition detection and board review fall out for free.
+
+The bot is an alpha-beta search with the usual furniture: captures ordered most-valuable-victim
+first, killer moves and a history table, and a quiescence search so a position is never judged in
+the middle of an exchange. What separates the levels is how far it is allowed to go:
+
+| Level | Depth | Quiescence | Noise |
+| --- | --- | --- | --- |
+| Easy | 1 ply | no | ±120 centipawns, and one move in five is played unseen |
+| Medium | 3 ply | yes | ±30 centipawns |
+| Hard | up to 6 ply | yes | none |
+
+Each level also carries a node and a time budget. The search deepens one ply at a time and plays
+the best move of the last iteration it finished, so a slow phone gives up depth rather than making
+the player wait.
 
 ### The Ludo engine
 
@@ -143,6 +159,12 @@ To run local unit and screenshot tests:
 Chess move generation is verified with **perft** — the number of leaf nodes reachable at a given
 depth — against the published counts for the standard test positions (the starting position,
 Kiwipete and five others). If any rule is subtly wrong, `PerftTest` fails.
+
+The computer opponent is tested on what each level promises: every level plays legal moves and
+finds mate in one, the two thinking levels force a mate in two, take a queen that is left hanging
+and refuse the pawn that would cost them their own queen, Hard converts a king-and-queen endgame
+into mate rather than shuffling into the fifty-move rule, and Easy varies its play enough to be
+beatable.
 
 Ludo is verified the same way round: as well as the rule-by-rule tests, `LudoRulesTest` plays
 thirty complete games from fixed seeds and checks every one reaches a winner with the board still
