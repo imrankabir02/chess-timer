@@ -1,0 +1,477 @@
+package com.example.viewmodel
+
+import android.app.Application
+import android.content.Context
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.os.Build
+import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.chess.ChessGame
+import com.example.chess.Move
+import com.example.chess.PieceColor
+import com.example.chess.PieceType
+import com.example.chess.Square
+import com.example.data.AppDatabase
+import com.example.data.TimePreset
+import com.example.data.TimePresetRepository
+import com.example.model.ChessGameUiState
+import com.example.model.GameTimeControl
+import com.example.model.PendingPromotion
+import com.example.model.TimingStyle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+/**
+ * Drives a real game of chess played on the device, with the same time controls the physical
+ * clock mode offers. The rules live in [com.example.chess]; this class owns the clock, the
+ * selection state and the feedback effects.
+ */
+class ChessGameViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val db = AppDatabase.getDatabase(application, viewModelScope)
+    private val repository = TimePresetRepository(db.timePresetDao())
+
+    /** The stored presets, offered as time controls when starting a new game. */
+    val timeControls: StateFlow<List<GameTimeControl>> = repository.allPresets
+        .map { presets -> listOf(GameTimeControl.UNLIMITED) + presets.map { it.toTimeControl() } }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = listOf(GameTimeControl.UNLIMITED)
+        )
+
+    private val _state = MutableStateFlow(ChessGameUiState())
+    val state: StateFlow<ChessGameUiState> = _state.asStateFlow()
+
+    /** Clock readings after each half-move, so undo can rewind time as well as the board. */
+    private val clockHistory = mutableListOf(
+        GameTimeControl.DEFAULT.initialTimeMs to GameTimeControl.DEFAULT.initialTimeMs
+    )
+
+    private var timerJob: Job? = null
+
+    private val toneGenerator = try {
+        ToneGenerator(AudioManager.STREAM_MUSIC, 70)
+    } catch (e: Exception) {
+        null
+    }
+
+    private val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val manager = application.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+        manager?.defaultVibrator
+    } else {
+        @Suppress("DEPRECATION")
+        application.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+    }
+
+    // region Game lifecycle
+
+    fun newGame(timeControl: GameTimeControl = _state.value.timeControl) {
+        stopClock()
+        val startTime = if (timeControl.isUnlimited) 0L else timeControl.initialTimeMs
+        clockHistory.clear()
+        clockHistory.add(startTime to startTime)
+        _state.update { current ->
+            ChessGameUiState(
+                game = ChessGame.new(),
+                timeControl = timeControl,
+                whiteTimeMs = startTime,
+                blackTimeMs = startTime,
+                delayBufferMs = initialDelayFor(timeControl),
+                clockRunning = false,
+                clockStarted = false,
+                boardFlipped = false,
+                autoFlip = current.autoFlip,
+                soundEnabled = current.soundEnabled,
+                vibrationEnabled = current.vibrationEnabled
+            )
+        }
+        vibrate(30)
+    }
+
+    fun selectTimeControl(timeControl: GameTimeControl) = newGame(timeControl)
+
+    // endregion
+
+    // region Board interaction
+
+    fun onSquareTapped(square: Int) {
+        val current = _state.value
+        if (current.isOver || current.pendingPromotion != null || current.isPaused) return
+        if (!Square.isValid(square)) return
+
+        if (current.selectedSquare == square) {
+            clearSelection()
+            return
+        }
+
+        if (current.selectedSquare != Square.NONE) {
+            val candidates = current.position.legalMoves()
+                .filter { it.from == current.selectedSquare && it.to == square }
+            if (candidates.isNotEmpty()) {
+                val promotion = candidates.firstOrNull { it.promotion != null }
+                if (promotion != null) {
+                    _state.update {
+                        it.copy(
+                            pendingPromotion = PendingPromotion(
+                                from = current.selectedSquare,
+                                to = square,
+                                color = current.sideToMove
+                            )
+                        )
+                    }
+                } else {
+                    applyMove(candidates.first())
+                }
+                return
+            }
+        }
+
+        val piece = current.position.pieceAt(square)
+        if (piece != null && piece.color == current.sideToMove) {
+            _state.update {
+                it.copy(
+                    selectedSquare = square,
+                    legalTargets = current.position.legalMovesFrom(square).map { m -> m.to }.toSet()
+                )
+            }
+        } else {
+            clearSelection()
+        }
+    }
+
+    fun clearSelection() {
+        _state.update { it.copy(selectedSquare = Square.NONE, legalTargets = emptySet()) }
+    }
+
+    fun choosePromotion(type: PieceType) {
+        val pending = _state.value.pendingPromotion ?: return
+        val move = _state.value.position.findLegalMove(pending.from, pending.to, type)
+        _state.update { it.copy(pendingPromotion = null) }
+        if (move != null) applyMove(move)
+    }
+
+    fun cancelPromotion() {
+        _state.update { it.copy(pendingPromotion = null) }
+        clearSelection()
+    }
+
+    private fun applyMove(move: Move) {
+        val played = _state.value.game.play(move) ?: return
+        val mover = _state.value.sideToMove
+
+        // The mover's clock stops the moment the piece lands, before anything else is worked out.
+        stopClock()
+
+        var snapshot = _state.value.whiteTimeMs to _state.value.blackTimeMs
+        var clockShouldRun = false
+
+        _state.update { state ->
+            val bonus = if (!state.timeControl.isUnlimited &&
+                state.timeControl.timingStyle == TimingStyle.INCREMENT
+            ) {
+                state.timeControl.incrementSeconds * 1_000L
+            } else {
+                0L
+            }
+            val whiteTime = state.whiteTimeMs + if (mover == PieceColor.WHITE) bonus else 0L
+            val blackTime = state.blackTimeMs + if (mover == PieceColor.BLACK) bonus else 0L
+            snapshot = whiteTime to blackTime
+            clockShouldRun = !state.timeControl.isUnlimited && !played.isOver
+
+            state.copy(
+                game = played,
+                whiteTimeMs = whiteTime,
+                blackTimeMs = blackTime,
+                delayBufferMs = initialDelayFor(state.timeControl),
+                clockRunning = clockShouldRun,
+                clockStarted = state.clockStarted || !state.timeControl.isUnlimited,
+                selectedSquare = Square.NONE,
+                legalTargets = emptySet(),
+                boardFlipped = if (state.autoFlip) {
+                    played.sideToMove == PieceColor.BLACK
+                } else {
+                    state.boardFlipped
+                },
+                resultDismissed = false
+            )
+        }
+
+        clockHistory.add(snapshot)
+        announceMove(played, move)
+
+        if (clockShouldRun) restartClockLoop()
+    }
+
+    // endregion
+
+    // region Controls
+
+    fun undo() {
+        val current = _state.value
+        val previous = current.game.undo() ?: return
+        stopClock()
+        // Taking back a declared result leaves the move list — and so the clocks — untouched.
+        val movesWereTakenBack = previous.moveCount < current.game.moveCount
+        if (movesWereTakenBack && clockHistory.size > 1) {
+            clockHistory.removeAt(clockHistory.size - 1)
+        }
+        val (whiteTime, blackTime) = clockHistory.last()
+        _state.update {
+            it.copy(
+                game = previous,
+                whiteTimeMs = whiteTime,
+                blackTimeMs = blackTime,
+                delayBufferMs = initialDelayFor(it.timeControl),
+                clockRunning = false,
+                clockStarted = it.clockStarted && previous.moveCount > 0,
+                selectedSquare = Square.NONE,
+                legalTargets = emptySet(),
+                pendingPromotion = null,
+                boardFlipped = if (it.autoFlip) previous.sideToMove == PieceColor.BLACK else it.boardFlipped,
+                resultDismissed = false
+            )
+        }
+        vibrate(25)
+    }
+
+    fun pauseClock() {
+        if (!_state.value.clockRunning) return
+        stopClock()
+        _state.update { it.copy(clockRunning = false) }
+        vibrate(40)
+    }
+
+    fun resumeClock() {
+        val current = _state.value
+        if (current.isOver || current.timeControl.isUnlimited) return
+        if (!current.clockStarted || current.clockRunning) return
+        _state.update { it.copy(clockRunning = true) }
+        restartClockLoop()
+    }
+
+    fun toggleClock() {
+        if (_state.value.clockRunning) pauseClock() else resumeClock()
+    }
+
+    fun resign(color: PieceColor) {
+        val current = _state.value
+        if (current.isOver) return
+        stopClock()
+        _state.update {
+            it.copy(game = it.game.resign(color), clockRunning = false, resultDismissed = false)
+        }
+        signalGameOver()
+    }
+
+    fun agreeDraw() {
+        val current = _state.value
+        if (current.isOver) return
+        stopClock()
+        _state.update {
+            it.copy(game = it.game.agreeDraw(), clockRunning = false, resultDismissed = false)
+        }
+        signalGameOver()
+    }
+
+    fun flipBoard() {
+        _state.update { it.copy(boardFlipped = !it.boardFlipped) }
+    }
+
+    fun toggleAutoFlip() {
+        _state.update {
+            val enabled = !it.autoFlip
+            it.copy(
+                autoFlip = enabled,
+                boardFlipped = if (enabled) it.sideToMove == PieceColor.BLACK else it.boardFlipped
+            )
+        }
+    }
+
+    fun toggleSound() {
+        _state.update { it.copy(soundEnabled = !it.soundEnabled) }
+    }
+
+    fun toggleVibration() {
+        _state.update { it.copy(vibrationEnabled = !it.vibrationEnabled) }
+    }
+
+    fun dismissResult() {
+        _state.update { it.copy(resultDismissed = true) }
+    }
+
+    // endregion
+
+    // region Clock
+
+    private fun initialDelayFor(timeControl: GameTimeControl): Long =
+        if (!timeControl.isUnlimited && timeControl.timingStyle == TimingStyle.DELAY) {
+            timeControl.delaySeconds * 1_000L
+        } else {
+            0L
+        }
+
+    private fun restartClockLoop() {
+        stopClock()
+        var lastTick = SystemClock.elapsedRealtime()
+        timerJob = viewModelScope.launch(Dispatchers.Default) {
+            while (true) {
+                delay(TICK_MS)
+                val now = SystemClock.elapsedRealtime()
+                val elapsed = now - lastTick
+                lastTick = now
+
+                var flagged: PieceColor? = null
+                var lowTimePip = false
+
+                _state.update { current ->
+                    // Reset per-attempt: MutableStateFlow.update may re-run this block.
+                    flagged = null
+                    lowTimePip = false
+                    if (!current.clockRunning || current.isOver || current.timeControl.isUnlimited) {
+                        return@update current
+                    }
+
+                    val mover = current.sideToMove
+                    var whiteTime = current.whiteTimeMs
+                    var blackTime = current.blackTimeMs
+                    var buffer = current.delayBufferMs
+                    var drain = elapsed
+
+                    if (buffer > 0L) {
+                        val used = minOf(buffer, drain)
+                        buffer -= used
+                        drain -= used
+                    }
+
+                    if (drain > 0L) {
+                        if (mover == PieceColor.WHITE) whiteTime -= drain else blackTime -= drain
+                    }
+
+                    val before = if (mover == PieceColor.WHITE) current.whiteTimeMs else current.blackTimeMs
+                    val after = if (mover == PieceColor.WHITE) whiteTime else blackTime
+                    if (after in 1L until LOW_TIME_MS && before / 1000L != after / 1000L) {
+                        lowTimePip = true
+                    }
+
+                    if (whiteTime <= 0L) {
+                        whiteTime = 0L
+                        flagged = PieceColor.WHITE
+                    }
+                    if (blackTime <= 0L) {
+                        blackTime = 0L
+                        flagged = PieceColor.BLACK
+                    }
+
+                    val loser = flagged
+                    current.copy(
+                        whiteTimeMs = whiteTime,
+                        blackTimeMs = blackTime,
+                        delayBufferMs = buffer,
+                        game = if (loser != null) current.game.flag(loser) else current.game,
+                        clockRunning = loser == null,
+                        resultDismissed = if (loser != null) false else current.resultDismissed
+                    )
+                }
+
+                if (flagged != null) {
+                    signalGameOver()
+                    break
+                }
+                if (lowTimePip) playTone(ToneGenerator.TONE_CDMA_PIP, 60)
+            }
+        }
+    }
+
+    private fun stopClock() {
+        timerJob?.cancel()
+        timerJob = null
+    }
+
+    // endregion
+
+    // region Feedback
+
+    private fun announceMove(game: ChessGame, move: Move) {
+        vibrate(if (move.isCapture) 45L else 25L)
+        when {
+            game.isOver -> signalGameOver()
+            game.isCheck -> playTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 150)
+            move.isCapture -> playTone(ToneGenerator.TONE_PROP_BEEP2, 90)
+            else -> playTone(ToneGenerator.TONE_PROP_BEEP, 60)
+        }
+    }
+
+    private fun signalGameOver() {
+        vibrate(320)
+        playTone(ToneGenerator.TONE_CDMA_ABBR_ALERT, 400)
+    }
+
+    private fun vibrate(durationMs: Long) {
+        if (!_state.value.vibrationEnabled) return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator?.vibrate(
+                    VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(durationMs)
+            }
+        } catch (e: Exception) {
+            // Feedback is optional; never let it break a move.
+        }
+    }
+
+    private fun playTone(tone: Int, durationMs: Int) {
+        if (!_state.value.soundEnabled) return
+        try {
+            toneGenerator?.startTone(tone, durationMs)
+        } catch (e: Exception) {
+            // Feedback is optional; never let it break a move.
+        }
+    }
+
+    // endregion
+
+    override fun onCleared() {
+        super.onCleared()
+        stopClock()
+        try {
+            toneGenerator?.release()
+        } catch (e: Exception) {
+            // Nothing useful to do while tearing down.
+        }
+    }
+
+    companion object {
+        private const val TICK_MS = 40L
+        private const val LOW_TIME_MS = 10_000L
+    }
+}
+
+private fun TimePreset.toTimeControl(): GameTimeControl = GameTimeControl(
+    label = name,
+    initialTimeMs = initialTimeMs,
+    timingStyle = try {
+        TimingStyle.valueOf(timingStyle)
+    } catch (e: IllegalArgumentException) {
+        TimingStyle.NONE
+    },
+    incrementSeconds = incrementSeconds,
+    delaySeconds = delaySeconds
+)
