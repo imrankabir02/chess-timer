@@ -38,12 +38,14 @@ import com.example.ui.theme.GeometricAccentLavender
 import com.example.ui.theme.GeometricActiveCyan
 import com.example.ui.theme.GeometricDarkBackground
 import com.example.ui.theme.GeometricSurfaceDark
+import com.example.ui.theme.LudoRed
 
 /** Landing screen: play a real game, or use the device as a plain tournament clock. */
 @Composable
 fun HomeScreen(
     onPlayChess: () -> Unit,
     onOpenClock: () -> Unit,
+    onPlayLudo: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -70,7 +72,7 @@ fun HomeScreen(
         Spacer(modifier = Modifier.height(14.dp))
 
         Text(
-            text = "CHESS CLOCK",
+            text = "GAME TABLE",
             style = MaterialTheme.typography.headlineMedium.copy(
                 fontWeight = FontWeight.Black,
                 letterSpacing = 3.sp
@@ -78,12 +80,12 @@ fun HomeScreen(
             color = Color.White
         )
         Text(
-            text = "Play a full game, or keep time for a board in front of you.",
+            text = "Play a game on the device, or keep time for a board in front of you.",
             style = MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic),
             color = Color.White.copy(alpha = 0.55f)
         )
 
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(28.dp))
 
         ModeCard(
             title = "Play chess",
@@ -94,7 +96,18 @@ fun HomeScreen(
             testTag = "mode_play_chess"
         )
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(12.dp))
+
+        ModeCard(
+            title = "Play ludo",
+            subtitle = "Two to four seats, computer opponents, captures and safe squares",
+            accent = LudoRed,
+            glyph = "🎲",
+            onClick = onPlayLudo,
+            testTag = "mode_play_ludo"
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
 
         ModeCard(
             title = "Chess clock",

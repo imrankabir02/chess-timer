@@ -552,7 +552,7 @@ private fun GameControlBar(
 }
 
 @Composable
-private fun SquareIconButton(
+internal fun SquareIconButton(
     onClick: () -> Unit,
     enabled: Boolean = true,
     testTag: String,
@@ -853,8 +853,9 @@ private fun GameOverDialog(
     }
 }
 
+/** Shared dialog shell for the game screens. */
 @Composable
-private fun DialogCard(content: @Composable () -> Unit) {
+internal fun DialogCard(content: @Composable () -> Unit) {
     Card(
         colors = CardDefaults.cardColors(
             containerColor = GeometricSurfaceDark,
