@@ -19,3 +19,14 @@ val GeometricSurfaceDark = Color(0xFF1C1B1F)
 val GeometricAccentLavender = Color(0xFFD0BCFF)
 val GeometricPurpleDark = Color(0xFF381E72)
 
+// Chessboard palette
+val BoardLightSquare = Color(0xFFEDE6D2)
+val BoardDarkSquare = Color(0xFF6F8F5A)
+val BoardLastMove = Color(0x66F2D74E)
+val BoardSelected = Color(0x99F2D74E)
+val BoardCheck = Color(0x99E53935)
+val BoardMoveHint = Color(0x593B3B3B)
+val BoardWhitePiece = Color(0xFFFAFAFA)
+val BoardBlackPiece = Color(0xFF17181B)
+val BoardPieceOutline = Color(0xFF1A1A1A)
+

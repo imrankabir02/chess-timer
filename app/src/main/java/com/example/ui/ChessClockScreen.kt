@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Delete
@@ -94,7 +95,8 @@ import com.example.viewmodel.ChessTimerViewModel
 @Composable
 fun ChessClockScreen(
     viewModel: ChessTimerViewModel,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onExit: () -> Unit = {}
 ) {
     val state by viewModel.timerState.collectAsState()
     val presets by viewModel.presets.collectAsState()
@@ -135,6 +137,7 @@ fun ChessClockScreen(
             // --- REGULATION CONTROL BAR (MIDDLE) ---
             MiddleControlBar(
                 state = state,
+                onExit = onExit,
                 onPause = { viewModel.pauseGame() },
                 onResume = { viewModel.resumeGame() },
                 onReset = { viewModel.resetGame() },
@@ -439,6 +442,7 @@ fun PlayerClockSegment(
 @Composable
 fun MiddleControlBar(
     state: ChessTimerState,
+    onExit: () -> Unit = {},
     onPause: () -> Unit,
     onResume: () -> Unit,
     onReset: () -> Unit,
@@ -454,7 +458,22 @@ fun MiddleControlBar(
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Left Side: Sound and Vibration controls
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            IconButton(
+                onClick = onExit,
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(GeometricSurfaceDark)
+                    .testTag("exit_clock_button"),
+                colors = IconButtonDefaults.iconButtonColors(contentColor = Color(0xFFD0BCFF))
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back to modes"
+                )
+            }
+
             IconButton(
                 onClick = onToggleSound,
                 modifier = Modifier
@@ -507,7 +526,7 @@ fun MiddleControlBar(
         }
 
         // Right Side: Reset and Custom settings Launcher
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             IconButton(
                 onClick = onReset,
                 modifier = Modifier
