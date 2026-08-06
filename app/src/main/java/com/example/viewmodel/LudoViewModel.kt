@@ -73,7 +73,8 @@ class LudoViewModel(application: Application) : AndroidViewModel(application) {
                 diceFace = 6,
                 message = "Roll to start",
                 soundEnabled = current.soundEnabled,
-                vibrationEnabled = current.vibrationEnabled
+                vibrationEnabled = current.vibrationEnabled,
+                setupSeen = true
             )
         }
         vibrate(30)
@@ -82,6 +83,11 @@ class LudoViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateSetup(setup: LudoSetup) {
         _state.update { it.copy(setup = setup) }
+    }
+
+    /** The table setup is offered once when the screen opens; this records that it has been. */
+    fun markSetupSeen() {
+        _state.update { it.copy(setupSeen = true) }
     }
 
     /** Test hook: makes the dice reproducible. */

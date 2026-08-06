@@ -39,6 +39,7 @@ Two to four seats on one device, any of them human or computer.
 - **Optional blockades**: switch them on and two tokens of one colour bar everyone else from passing or landing on that square.
 - **Computer opponents**: a heuristic bot that takes captures, races tokens home, gets out of the yard when the board is empty, and keeps clear of squares an opponent can reach next roll.
 - **Places, not just a winner**: with three or four players the game runs on until only one player is left, and the final dialog shows the full podium.
+- **A corner each**: every seat has its own panel in the corner that matches its yard on the board, and the die appears in the panel of whoever is on turn — so each player rolls from their own side of the table. With two or more people round one phone the far panels turn to face them; a lone player against the computer keeps everything upright.
 - **Board and dice**: the 15x15 board is painted in one pass, tokens glide between squares and pulse when they are playable, and the die spins as it rolls. When there is only one legal move it is played for you.
 
 ### ⏱️ Chess clock

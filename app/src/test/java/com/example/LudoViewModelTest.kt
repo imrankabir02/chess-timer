@@ -205,6 +205,55 @@ class LudoViewModelTest {
     }
 
     @Test
+    fun aTableCanBeSetForTwoThreeOrFourPlayers() = runTest(dispatcher) {
+        listOf(
+            2 to listOf(LudoColor.RED, LudoColor.YELLOW),
+            3 to listOf(LudoColor.RED, LudoColor.GREEN, LudoColor.YELLOW),
+            4 to LudoColor.entries.toList()
+        ).forEach { (count, expectedSeats) ->
+            viewModel.newGame(LudoSetup(playerCount = count, botColors = emptySet()))
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertEquals("$count players", count, state.game.players.size)
+            assertEquals(expectedSeats, state.game.players.map { it.color })
+            assertEquals(count, state.setup.playerCount)
+            // Colours that are not playing have no corner to show.
+            LudoColor.entries.filter { it !in expectedSeats }.forEach {
+                assertNull(state.seat(it))
+            }
+        }
+    }
+
+    @Test
+    fun theTableSetupIsOfferedOnlyOnce() = runTest(dispatcher) {
+        assertFalse("the screen should open on the setup sheet", viewModel.state.value.setupSeen)
+
+        viewModel.markSetupSeen()
+        assertTrue(viewModel.state.value.setupSeen)
+
+        viewModel.newGame(twoHumans)
+        advanceUntilIdle()
+        assertTrue("starting a game does not re-open it", viewModel.state.value.setupSeen)
+    }
+
+    @Test
+    fun theDieBelongsToWhoeverIsOnTurn() = runTest(dispatcher) {
+        viewModel.useDice(LoadedDie(3))
+        viewModel.newGame(twoHumans)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.isOnTurn(LudoColor.RED))
+        assertFalse(viewModel.state.value.isOnTurn(LudoColor.YELLOW))
+
+        // A three does nothing at the start, so the die passes to the other corner.
+        viewModel.rollDice()
+        advanceUntilIdle()
+        assertFalse(viewModel.state.value.isOnTurn(LudoColor.RED))
+        assertTrue(viewModel.state.value.isOnTurn(LudoColor.YELLOW))
+    }
+
+    @Test
     fun blockadesCanBeTurnedOnForAGame() = runTest(dispatcher) {
         viewModel.newGame(twoHumans.copy(rules = twoHumans.rules.copy(blockades = true)))
         advanceUntilIdle()

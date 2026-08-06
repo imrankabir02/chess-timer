@@ -30,6 +30,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Casino
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VolumeMute
 import androidx.compose.material.icons.filled.VolumeUp
@@ -45,6 +46,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -85,6 +87,15 @@ fun LudoGameScreen(
     val state by viewModel.state.collectAsState()
     var showSetup by remember { mutableStateOf(false) }
 
+    // Offer the table setup once, so the choice of two, three or four players is the first
+    // thing a player sees rather than something hidden behind an icon.
+    LaunchedEffect(state.setupSeen) {
+        if (!state.setupSeen) {
+            showSetup = true
+            viewModel.markSetupSeen()
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -97,13 +108,22 @@ fun LudoGameScreen(
         LudoTopBar(
             state = state,
             onExit = onExit,
+            onOpenSetup = { showSetup = true },
             onToggleSound = { viewModel.toggleSound() },
-            onNewGame = { showSetup = true }
+            onNewGame = { viewModel.newGame() }
         )
 
-        SeatStrip(state = state)
+        // The four seats sit in the corners that match their yards on the board, and the die
+        // belongs to whoever is on turn — so each player rolls from their own side of the table.
+        SeatRow(
+            left = LudoColor.RED,
+            right = LudoColor.GREEN,
+            state = state,
+            rotated = state.setup.tableMode,
+            onRoll = { viewModel.rollDice() }
+        )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         LudoBoardView(
             state = state,
@@ -113,12 +133,19 @@ fun LudoGameScreen(
             onTokenClick = { color, index -> viewModel.onTokenTapped(color, index) }
         )
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
-        TurnBar(
+        SeatRow(
+            left = LudoColor.BLUE,
+            right = LudoColor.YELLOW,
             state = state,
+            rotated = false,
             onRoll = { viewModel.rollDice() }
         )
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        CommentaryBar(state = state)
     }
 
     if (showSetup) {
@@ -148,6 +175,7 @@ fun LudoGameScreen(
 private fun LudoTopBar(
     state: LudoUiState,
     onExit: () -> Unit,
+    onOpenSetup: () -> Unit,
     onToggleSound: () -> Unit,
     onNewGame: () -> Unit
 ) {
@@ -178,6 +206,34 @@ private fun LudoTopBar(
             )
         }
 
+        // A plain "4P" pill: the number of players is a choice, not something buried in a menu.
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(GeometricAccentLavender.copy(alpha = 0.16f))
+                .border(1.dp, GeometricAccentLavender.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                .clickable { onOpenSetup() }
+                .padding(horizontal = 10.dp, vertical = 7.dp)
+                .testTag("players_button"),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.People,
+                contentDescription = "Choose players",
+                tint = GeometricAccentLavender,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+            Text(
+                text = "${state.setup.playerCount}P",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = GeometricAccentLavender
+            )
+        }
+
+        Spacer(modifier = Modifier.width(4.dp))
+
         IconButton(
             onClick = onToggleSound,
             colors = IconButtonDefaults.iconButtonColors(contentColor = GeometricAccentLavender),
@@ -198,106 +254,186 @@ private fun LudoTopBar(
     }
 }
 
-/** One chip per seat, showing who they are and how many tokens are home. */
+/** The two seats along one edge of the board, in the corners their yards occupy. */
 @Composable
-private fun SeatStrip(state: LudoUiState) {
+private fun SeatRow(
+    left: LudoColor,
+    right: LudoColor,
+    state: LudoUiState,
+    rotated: Boolean,
+    onRoll: () -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        state.game.players.forEach { player ->
-            SeatChip(
-                player = player,
-                isOnTurn = !state.game.isOver && player.color == state.currentColor,
-                place = state.game.finishOrder.indexOf(player.color).takeIf { it >= 0 }?.plus(1),
-                modifier = Modifier.weight(1f)
-            )
-        }
-    }
-}
-
-@Composable
-private fun SeatChip(
-    player: LudoPlayer,
-    isOnTurn: Boolean,
-    place: Int?,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (isOnTurn) player.color.brand.copy(alpha = 0.22f) else GeometricSurfaceDark)
-            .border(
-                width = if (isOnTurn) 1.5.dp else 0.dp,
-                color = if (isOnTurn) player.color.brand else Color.Transparent,
-                shape = RoundedCornerShape(12.dp)
-            )
-            .padding(horizontal = 8.dp, vertical = 7.dp)
-            .testTag("seat_${player.color.name.lowercase()}"),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(player.color.brand)
-            )
-            Spacer(modifier = Modifier.width(5.dp))
-            Text(
-                text = if (player.isBot) "Bot" else "You",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White.copy(alpha = if (isOnTurn) 1f else 0.7f)
-            )
-        }
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            text = place?.let { placeLabel(it) } ?: "${player.tokensHome}/${LudoBoard.TOKENS_PER_PLAYER} home",
-            fontSize = 10.sp,
-            color = if (place != null) player.color.brand else Color.White.copy(alpha = 0.5f),
-            fontWeight = if (place != null) FontWeight.Bold else FontWeight.Normal
+        // Each die sits at the outer end of its panel, directly over that colour's own yard.
+        SeatPanel(
+            color = left,
+            state = state,
+            dieOnTheLeft = true,
+            rotated = rotated,
+            onRoll = onRoll,
+            modifier = Modifier.weight(1f)
+        )
+        SeatPanel(
+            color = right,
+            state = state,
+            dieOnTheLeft = false,
+            rotated = rotated,
+            onRoll = onRoll,
+            modifier = Modifier.weight(1f)
         )
     }
 }
 
+/**
+ * One player's corner: who they are, how many tokens are home, and — while it is their turn —
+ * the die itself. Empty corners keep their place so the board stays centred.
+ */
 @Composable
-private fun TurnBar(state: LudoUiState, onRoll: () -> Unit) {
+private fun SeatPanel(
+    color: LudoColor,
+    state: LudoUiState,
+    dieOnTheLeft: Boolean,
+    rotated: Boolean,
+    onRoll: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val player = state.seat(color)
+    val isOnTurn = player != null && state.isOnTurn(color)
+    val place = state.game.finishOrder.indexOf(color).takeIf { it >= 0 }?.plus(1)
+
+    Box(
+        modifier = modifier
+            .height(74.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                when {
+                    player == null -> Color.White.copy(alpha = 0.03f)
+                    isOnTurn -> color.brand.copy(alpha = 0.20f)
+                    else -> GeometricSurfaceDark
+                }
+            )
+            .border(
+                width = if (isOnTurn) 1.5.dp else 0.dp,
+                color = if (isOnTurn) color.brand else Color.Transparent,
+                shape = RoundedCornerShape(16.dp)
+            )
+            .testTag("seat_${color.name.lowercase()}")
+    ) {
+        val content = @Composable {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val dieSlot = @Composable {
+                    Box(
+                        modifier = Modifier.size(54.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isOnTurn) {
+                            DiceButton(
+                                value = state.diceFace,
+                                color = color.brand,
+                                enabled = state.canRoll,
+                                isRolling = state.isRolling,
+                                onClick = onRoll,
+                                testTag = "dice_${color.name.lowercase()}"
+                            )
+                        }
+                    }
+                }
+
+                if (dieOnTheLeft) {
+                    dieSlot()
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(11.dp)
+                                .clip(CircleShape)
+                                .background(if (player == null) color.brand.copy(alpha = 0.3f) else color.brand)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = when {
+                                player == null -> "Empty"
+                                player.isBot -> "Computer"
+                                else -> "Player"
+                            },
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White.copy(alpha = if (isOnTurn) 1f else 0.65f)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = when {
+                            player == null -> "—"
+                            place != null -> "${placeLabel(place)} place"
+                            else -> "${player.tokensHome}/${LudoBoard.TOKENS_PER_PLAYER} home"
+                        },
+                        fontSize = 11.sp,
+                        fontWeight = if (place != null) FontWeight.Bold else FontWeight.Normal,
+                        color = if (place != null) color.brand else Color.White.copy(alpha = 0.5f)
+                    )
+                    if (isOnTurn) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (state.awaitingTokenChoice) "Pick a token" else "Your roll",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = color.brand
+                        )
+                    }
+                }
+
+                if (!dieOnTheLeft) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    dieSlot()
+                }
+            }
+        }
+
+        if (rotated) {
+            Box(modifier = Modifier.fillMaxSize().rotate(180f)) { content() }
+        } else {
+            content()
+        }
+    }
+}
+
+/** A slim running commentary of the last thing that happened. */
+@Composable
+private fun CommentaryBar(state: LudoUiState) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(GeometricSurfaceDark)
-            .padding(14.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = if (state.game.isOver) {
-                    "Game over"
-                } else {
-                    "${state.currentColor.displayName}'s turn"
-                },
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                color = if (state.game.isOver) Color.White else state.currentColor.brand
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = state.message,
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = 0.65f),
-                modifier = Modifier.testTag("ludo_message")
-            )
-        }
-
-        Spacer(modifier = Modifier.width(12.dp))
-
-        DiceButton(
-            value = state.diceFace,
-            color = state.currentColor.brand,
-            enabled = state.canRoll,
-            isRolling = state.isRolling,
-            onClick = onRoll
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(if (state.game.isOver) Color.White.copy(alpha = 0.4f) else state.currentColor.brand)
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Text(
+            text = state.message,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.White.copy(alpha = 0.75f),
+            modifier = Modifier
+                .weight(1f)
+                .testTag("ludo_message")
         )
     }
 }
@@ -308,7 +444,8 @@ private fun DiceButton(
     color: Color,
     enabled: Boolean,
     isRolling: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    testTag: String = "dice_button"
 ) {
     val spin by rememberInfiniteTransition(label = "diceSpin").animateFloat(
         initialValue = 0f,
@@ -322,7 +459,7 @@ private fun DiceButton(
 
     Box(
         modifier = Modifier
-            .size(66.dp)
+            .size(52.dp)
             .rotate(if (isRolling) spin else 0f)
             .clip(RoundedCornerShape(16.dp))
             .background(Color.White)
@@ -333,13 +470,13 @@ private fun DiceButton(
             )
             .alpha(if (enabled || isRolling) 1f else 0.55f)
             .clickable(enabled = enabled) { onClick() }
-            .testTag("dice_button"),
+            .testTag(testTag),
         contentAlignment = Alignment.Center
     ) {
         DiceFace(
             value = value,
             pipColor = Color(0xFF23242A),
-            modifier = Modifier.size(46.dp)
+            modifier = Modifier.size(36.dp)
         )
     }
 }

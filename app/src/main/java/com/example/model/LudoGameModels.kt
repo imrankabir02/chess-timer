@@ -19,6 +19,12 @@ data class LudoSetup(
 
     val humanCount: Int get() = seats.count { it !in botColors }
 
+    /**
+     * With two or more people round one phone, the far side's panels are turned to face them.
+     * A lone human playing computer opponents keeps everything the right way up.
+     */
+    val tableMode: Boolean get() = humanCount >= 2
+
     fun describe(): String {
         val humans = humanCount
         val bots = seats.size - humans
@@ -42,7 +48,9 @@ data class LudoUiState(
     val message: String = "Roll to start",
     val soundEnabled: Boolean = true,
     val vibrationEnabled: Boolean = true,
-    val resultDismissed: Boolean = false
+    val resultDismissed: Boolean = false,
+    /** False until the player has been shown the table setup once. */
+    val setupSeen: Boolean = false
 ) {
     val currentPlayer: LudoPlayer get() = game.currentPlayer
 
@@ -63,4 +71,9 @@ data class LudoUiState(
 
     fun isMovable(color: LudoColor, tokenIndex: Int): Boolean =
         color == currentColor && tokenIndex in movableTokens
+
+    /** The seat sitting in a given corner, or null when that colour is not playing. */
+    fun seat(color: LudoColor): LudoPlayer? = game.players.firstOrNull { it.color == color }
+
+    fun isOnTurn(color: LudoColor): Boolean = !game.isOver && currentColor == color
 }
