@@ -30,3 +30,14 @@ val BoardWhitePiece = Color(0xFFFAFAFA)
 val BoardBlackPiece = Color(0xFF17181B)
 val BoardPieceOutline = Color(0xFF1A1A1A)
 
+// Ludo palette
+val LudoRed = Color(0xFFE2453C)
+val LudoGreen = Color(0xFF2FA84F)
+val LudoYellow = Color(0xFFEFB917)
+val LudoBlue = Color(0xFF2C7BE5)
+val LudoBoardCream = Color(0xFFF5F1E6)
+val LudoPathCell = Color(0xFFFDFCF7)
+val LudoPathBorder = Color(0xFF9A968B)
+val LudoStarTint = Color(0xFFB6B1A3)
+val LudoTokenShadow = Color(0x552B2B2B)
+

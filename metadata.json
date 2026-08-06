@@ -1,6 +1,6 @@
 {
   "name": "Chess Clock",
-  "description": "Play a full game of chess on the device, or use it as a responsive tournament clock with customizable time controls, increment/delay styles and saved presets.",
+  "description": "Play a full game of chess or a game of Ludo against the computer on the device, or use it as a responsive tournament clock with customizable time controls, increment/delay styles and saved presets.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
