@@ -11,6 +11,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.chess.ChessBot
 import com.example.chess.ChessGame
 import com.example.chess.Move
 import com.example.chess.PieceColor
@@ -20,12 +21,15 @@ import com.example.data.AppDatabase
 import com.example.data.TimePreset
 import com.example.data.TimePresetRepository
 import com.example.model.ChessGameUiState
+import com.example.model.ChessSetup
 import com.example.model.GameTimeControl
 import com.example.model.PendingPromotion
 import com.example.model.TimingStyle
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -34,11 +38,15 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.CoroutineContext
+import kotlin.random.Random
 
 /**
- * Drives a real game of chess played on the device, with the same time controls the physical
- * clock mode offers. The rules live in [com.example.chess]; this class owns the clock, the
- * selection state and the feedback effects.
+ * Drives a real game of chess played on the device, against another player or against the computer,
+ * with the same time controls the physical clock mode offers. The rules and the engine live in
+ * [com.example.chess]; this class owns the clock, the selection state, the pacing of the computer
+ * opponent and the feedback effects.
  */
 class ChessGameViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -64,6 +72,14 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
 
     private var timerJob: Job? = null
 
+    /** The opponent's engine, rebuilt whenever a game starts so a level change takes effect. */
+    private var bot: ChessBot? = null
+    private var botJob: Job? = null
+
+    /** Test hooks: a fixed seed makes the opponent reproducible, and the search can run inline. */
+    private var botRandom: Random = Random.Default
+    internal var botSearchContext: CoroutineContext = Dispatchers.Default
+
     private val toneGenerator = try {
         ToneGenerator(AudioManager.STREAM_MUSIC, 70)
     } catch (e: Exception) {
@@ -80,30 +96,52 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
 
     // region Game lifecycle
 
-    fun newGame(timeControl: GameTimeControl = _state.value.timeControl) {
+    fun newGame(
+        timeControl: GameTimeControl = _state.value.timeControl,
+        setup: ChessSetup = _state.value.setup
+    ) {
         stopClock()
+        botJob?.cancel()
         val startTime = if (timeControl.isUnlimited) 0L else timeControl.initialTimeMs
+        // A RANDOM side is settled here, once, so it does not flip about mid-game.
+        val dealt = setup.dealt(botRandom)
+        bot = if (dealt.vsComputer) ChessBot(dealt.difficulty, botRandom) else null
         clockHistory.clear()
         clockHistory.add(startTime to startTime)
         _state.update { current ->
             ChessGameUiState(
                 game = ChessGame.new(),
+                setup = dealt,
                 timeControl = timeControl,
                 whiteTimeMs = startTime,
                 blackTimeMs = startTime,
                 delayBufferMs = initialDelayFor(timeControl),
                 clockRunning = false,
                 clockStarted = false,
-                boardFlipped = false,
-                autoFlip = current.autoFlip,
+                // Playing Black against the computer means sitting behind the black pieces.
+                boardFlipped = dealt.vsComputer && dealt.humanColor == PieceColor.BLACK,
+                // Passing the device back and forth makes no sense with only one player at it.
+                autoFlip = current.autoFlip && !dealt.vsComputer,
                 soundEnabled = current.soundEnabled,
-                vibrationEnabled = current.vibrationEnabled
+                vibrationEnabled = current.vibrationEnabled,
+                setupSeen = true
             )
         }
         vibrate(30)
+        startComputerTurnIfNeeded()
     }
 
     fun selectTimeControl(timeControl: GameTimeControl) = newGame(timeControl)
+
+    /** Records that the setup has been offered, so it is not put in front of the player again. */
+    fun markSetupSeen() {
+        _state.update { it.copy(setupSeen = true) }
+    }
+
+    /** Test hook: makes the computer opponent reproducible. Takes effect from the next game. */
+    internal fun useBotRandom(random: Random) {
+        botRandom = random
+    }
 
     // endregion
 
@@ -112,6 +150,8 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
     fun onSquareTapped(square: Int) {
         val current = _state.value
         if (current.isOver || current.pendingPromotion != null || current.isPaused) return
+        // The board belongs to the computer while it is on move.
+        if (current.isComputerTurn) return
         if (!Square.isValid(square)) return
 
         if (current.selectedSquare == square) {
@@ -207,6 +247,7 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
                 } else {
                     state.boardFlipped
                 },
+                notice = null,
                 resultDismissed = false
             )
         }
@@ -215,6 +256,49 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
         announceMove(played, move)
 
         if (clockShouldRun) restartClockLoop()
+        startComputerTurnIfNeeded()
+    }
+
+    // endregion
+
+    // region The computer opponent
+
+    /**
+     * Hands the move to the computer when it is its turn. The search runs off the main thread and
+     * its result is only applied if the game has not moved on in the meantime — a take-back or a new
+     * game while it is thinking simply discards the move it was working out.
+     */
+    private fun startComputerTurnIfNeeded() {
+        val current = _state.value
+        val engine = bot ?: return
+        // Checked before cancelling: this also runs from inside the bot's own coroutine, once it has
+        // played, and must not cancel the job it is standing in.
+        if (!current.isComputerTurn || current.pendingPromotion != null) return
+        botJob?.cancel()
+
+        val gameWhenAsked = current.game
+        botJob = viewModelScope.launch(CoroutineName("chess-bot")) {
+            _state.update { it.copy(computerThinking = true) }
+            try {
+                // A move that lands the instant you let go of your own piece feels like a glitch.
+                delay(THINKING_PAUSE_MS)
+                val move = withContext(botSearchContext) { engine.chooseMove(gameWhenAsked) }
+                coroutineContext.ensureActive()
+                if (_state.value.game === gameWhenAsked && move != null) {
+                    applyMove(move)
+                }
+            } finally {
+                // update() runs even on cancellation, so the board never stays stuck on "thinking".
+                _state.update { it.copy(computerThinking = false) }
+            }
+        }
+    }
+
+    /** Drops whatever the computer was working out — after a take-back, or when the game ends. */
+    private fun stopComputerTurn() {
+        botJob?.cancel()
+        botJob = null
+        _state.update { it.copy(computerThinking = false) }
     }
 
     // endregion
@@ -223,30 +307,52 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun undo() {
         val current = _state.value
-        val previous = current.game.undo() ?: return
+        if (!current.canUndo) return
+        stopComputerTurn()
+
+        // A declared result — a resignation, a flag fall — is taken back on its own first. Only
+        // after that do further presses start rewinding the board.
+        var previous = current.game.undo() ?: return
+        if (previous.moveCount < current.game.moveCount) {
+            // Against the computer, stopping on its move would just hand it the move straight back,
+            // so a take-back steps past its reply as well.
+            repeat(current.undoPlies - 1) {
+                previous = previous.undo() ?: previous
+            }
+        }
+
         stopClock()
         // Taking back a declared result leaves the move list — and so the clocks — untouched.
-        val movesWereTakenBack = previous.moveCount < current.game.moveCount
-        if (movesWereTakenBack && clockHistory.size > 1) {
-            clockHistory.removeAt(clockHistory.size - 1)
+        val pliesTakenBack = current.game.moveCount - previous.moveCount
+        repeat(pliesTakenBack) {
+            if (clockHistory.size > 1) clockHistory.removeAt(clockHistory.size - 1)
         }
         val (whiteTime, blackTime) = clockHistory.last()
+        val rewoundGame = previous
         _state.update {
             it.copy(
-                game = previous,
+                game = rewoundGame,
                 whiteTimeMs = whiteTime,
                 blackTimeMs = blackTime,
                 delayBufferMs = initialDelayFor(it.timeControl),
                 clockRunning = false,
-                clockStarted = it.clockStarted && previous.moveCount > 0,
+                clockStarted = it.clockStarted && rewoundGame.moveCount > 0,
                 selectedSquare = Square.NONE,
                 legalTargets = emptySet(),
                 pendingPromotion = null,
-                boardFlipped = if (it.autoFlip) previous.sideToMove == PieceColor.BLACK else it.boardFlipped,
+                boardFlipped = if (it.autoFlip) {
+                    rewoundGame.sideToMove == PieceColor.BLACK
+                } else {
+                    it.boardFlipped
+                },
+                notice = null,
                 resultDismissed = false
             )
         }
         vibrate(25)
+
+        // Taking back only a declared result can leave the computer on move again.
+        if (pliesTakenBack == 0) startComputerTurnIfNeeded()
     }
 
     fun pauseClock() {
@@ -272,20 +378,78 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
         val current = _state.value
         if (current.isOver) return
         stopClock()
+        stopComputerTurn()
         _state.update {
-            it.copy(game = it.game.resign(color), clockRunning = false, resultDismissed = false)
+            it.copy(
+                game = it.game.resign(color),
+                clockRunning = false,
+                notice = null,
+                resultDismissed = false
+            )
         }
         signalGameOver()
     }
 
     fun agreeDraw() {
-        val current = _state.value
-        if (current.isOver) return
+        if (_state.value.isOver) return
+        stopComputerTurn()
+        finishWithAgreedDraw()
+    }
+
+    /** The draw itself, without touching the computer's job — the offer flow is already inside it. */
+    private fun finishWithAgreedDraw() {
+        if (_state.value.isOver) return
         stopClock()
         _state.update {
-            it.copy(game = it.game.agreeDraw(), clockRunning = false, resultDismissed = false)
+            it.copy(
+                game = it.game.agreeDraw(),
+                clockRunning = false,
+                notice = null,
+                resultDismissed = false
+            )
         }
         signalGameOver()
+    }
+
+    /**
+     * A draw offer. Between two players it is simply agreed — they have already talked it over. The
+     * computer weighs the position up first and says no when it would rather play on.
+     */
+    fun offerDraw() {
+        val current = _state.value
+        if (current.isOver) return
+        val engine = bot
+        val computerColor = current.setup.computerColor
+        if (engine == null || computerColor == null) {
+            agreeDraw()
+            return
+        }
+
+        botJob?.cancel()
+        botJob = viewModelScope.launch(CoroutineName("chess-bot-draw")) {
+            val gameWhenAsked = current.game
+            _state.update { it.copy(computerThinking = true, notice = null) }
+            val accepted = try {
+                withContext(botSearchContext) { engine.acceptsDrawOffer(gameWhenAsked, computerColor) }
+            } finally {
+                _state.update { it.copy(computerThinking = false) }
+            }
+            coroutineContext.ensureActive()
+            if (_state.value.game !== gameWhenAsked) return@launch
+
+            if (accepted) {
+                finishWithAgreedDraw()
+            } else {
+                _state.update { it.copy(notice = "The computer declines — it wants to play on.") }
+                playTone(ToneGenerator.TONE_PROP_NACK, 150)
+                // The offer cost the player nothing but the time it took to make it.
+                startComputerTurnIfNeeded()
+            }
+        }
+    }
+
+    fun dismissNotice() {
+        _state.update { it.copy(notice = null) }
     }
 
     fun flipBoard() {
@@ -389,6 +553,7 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
                 }
 
                 if (flagged != null) {
+                    stopComputerTurn()
                     signalGameOver()
                     break
                 }
@@ -451,6 +616,7 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
     override fun onCleared() {
         super.onCleared()
         stopClock()
+        botJob?.cancel()
         try {
             toneGenerator?.release()
         } catch (e: Exception) {
@@ -461,6 +627,9 @@ class ChessGameViewModel(application: Application) : AndroidViewModel(applicatio
     companion object {
         private const val TICK_MS = 40L
         private const val LOW_TIME_MS = 10_000L
+
+        /** A beat before the computer replies, so its move does not land on top of yours. */
+        private const val THINKING_PAUSE_MS = 350L
     }
 }
 

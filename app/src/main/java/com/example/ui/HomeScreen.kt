@@ -89,7 +89,7 @@ fun HomeScreen(
 
         ModeCard(
             title = "Play chess",
-            subtitle = "Full rules on the device — castling, en passant, promotion, draws",
+            subtitle = "Against a friend or the computer, at easy, medium or hard",
             accent = GeometricActiveCyan,
             glyph = "♞",
             onClick = onPlayChess,

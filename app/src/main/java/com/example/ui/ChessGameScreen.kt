@@ -1,5 +1,10 @@
 package com.example.ui
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -66,9 +71,11 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.example.chess.ChessDifficulty
 import com.example.chess.GameEndReason
 import com.example.chess.GameOutcome
 import com.example.chess.GameResult
@@ -77,6 +84,9 @@ import com.example.chess.PieceColor
 import com.example.chess.PieceType
 import com.example.chess.Square
 import com.example.model.ChessGameUiState
+import com.example.model.ChessOpponent
+import com.example.model.ChessSetup
+import com.example.model.ChessSide
 import com.example.model.GameTimeControl
 import com.example.model.PendingPromotion
 import com.example.model.TimingStyle
@@ -103,6 +113,11 @@ fun ChessGameScreen(
     var showResignConfirm by remember { mutableStateOf(false) }
     var showDrawConfirm by remember { mutableStateOf(false) }
 
+    // Ask who is playing before the first game rather than dropping straight into a default one.
+    LaunchedEffect(state.setupSeen) {
+        if (!state.setupSeen) showNewGame = true
+    }
+
     // A chess clock is useless if the screen sleeps mid-game.
     val view = LocalView.current
     DisposableEffect(Unit) {
@@ -110,10 +125,12 @@ fun ChessGameScreen(
         onDispose { view.keepScreenOn = false }
     }
 
-    // With the board fixed, the two players sit opposite each other, so the far panel is upside
-    // down. With auto-flip the device is passed around and everything should read upright.
+    // With the board fixed, two players sit opposite each other, so the far panel is upside down.
+    // With auto-flip the device is passed around, and against the computer there is only one person
+    // at the phone — either way everything should read upright.
     val topColor = if (state.boardFlipped) PieceColor.WHITE else PieceColor.BLACK
     val bottomColor = topColor.opposite
+    val farPanelFacesAway = !state.autoFlip && !state.vsComputer
 
     Column(
         modifier = modifier
@@ -134,7 +151,7 @@ fun ChessGameScreen(
         PlayerBar(
             color = topColor,
             state = state,
-            rotated = !state.autoFlip,
+            rotated = farPanelFacesAway,
             modifier = Modifier.testTag("player_bar_top")
         )
 
@@ -154,7 +171,7 @@ fun ChessGameScreen(
             } else {
                 Square.NONE
             },
-            enabled = !state.isOver && !state.isPaused,
+            enabled = state.boardEnabled,
             onSquareClick = { viewModel.onSquareTapped(it) }
         )
 
@@ -162,6 +179,7 @@ fun ChessGameScreen(
 
         MoveTicker(
             state = state,
+            onDismissNotice = { viewModel.dismissNotice() },
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -195,21 +213,29 @@ fun ChessGameScreen(
     if (showNewGame) {
         NewGameDialog(
             timeControls = timeControls,
-            current = state.timeControl,
+            currentTimeControl = state.timeControl,
+            currentSetup = state.setup,
             autoFlip = state.autoFlip,
             onToggleAutoFlip = { viewModel.toggleAutoFlip() },
-            onStart = {
-                viewModel.newGame(it)
+            onStart = { timeControl, setup ->
+                viewModel.newGame(timeControl, setup)
                 showNewGame = false
             },
-            onDismiss = { showNewGame = false }
+            onDismiss = {
+                showNewGame = false
+                viewModel.markSetupSeen()
+            }
         )
     }
 
     if (showResignConfirm) {
         ConfirmDialog(
             title = "Resign?",
-            message = "${state.sideToMove.displayName} resigns and the game ends.",
+            message = if (state.vsComputer) {
+                "You resign and the computer takes the point."
+            } else {
+                "${state.sideToMove.displayName} resigns and the game ends."
+            },
             confirmLabel = "Resign",
             onConfirm = {
                 viewModel.resign(state.sideToMove)
@@ -221,11 +247,15 @@ fun ChessGameScreen(
 
     if (showDrawConfirm) {
         ConfirmDialog(
-            title = "Agree a draw?",
-            message = "Both players agree to split the point.",
-            confirmLabel = "Draw",
+            title = if (state.vsComputer) "Offer a draw?" else "Agree a draw?",
+            message = if (state.vsComputer) {
+                "The computer will take a look at the position and decide."
+            } else {
+                "Both players agree to split the point."
+            },
+            confirmLabel = if (state.vsComputer) "Offer" else "Draw",
             onConfirm = {
-                viewModel.agreeDraw()
+                viewModel.offerDraw()
                 showDrawConfirm = false
             },
             onDismiss = { showDrawConfirm = false }
@@ -274,9 +304,12 @@ private fun GameTopBar(
                 modifier = Modifier.testTag("game_status_text")
             )
             Text(
-                text = state.timeControl.describe(),
+                text = "${state.setup.describe()} · ${state.timeControl.describe()}",
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = 0.55f)
+                color = Color.White.copy(alpha = 0.55f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("game_setup_text")
             )
         }
 
@@ -352,6 +385,14 @@ private fun PlayerBar(
                             ),
                             color = accent
                         )
+                        if (state.isComputer(color)) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            SeatBadge(
+                                label = state.setup.difficulty.label.uppercase(),
+                                thinking = state.computerThinking && isToMove,
+                                modifier = Modifier.testTag("computer_badge_${color.name.lowercase()}")
+                            )
+                        }
                         val lead = state.materialLead(color)
                         if (lead > 0) {
                             Spacer(modifier = Modifier.width(8.dp))
@@ -392,6 +433,42 @@ private fun PlayerBar(
     }
 }
 
+/** The little "CPU · HARD" tag on a computer seat, which pulses while it is working. */
+@Composable
+private fun SeatBadge(label: String, thinking: Boolean, modifier: Modifier = Modifier) {
+    // The animation only exists while it is thinking, so an idle badge costs nothing to keep on screen.
+    val alpha = if (thinking) {
+        val pulse by rememberInfiniteTransition(label = "seat_badge").animateFloat(
+            initialValue = 1f,
+            targetValue = 0.35f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 650),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "seat_badge_alpha"
+        )
+        pulse
+    } else {
+        1f
+    }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(GeometricAccentLavender.copy(alpha = 0.18f * alpha))
+            .padding(horizontal = 6.dp, vertical = 1.dp)
+    ) {
+        Text(
+            text = "CPU · $label",
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.8.sp
+            ),
+            fontSize = 9.sp,
+            color = GeometricAccentLavender.copy(alpha = alpha)
+        )
+    }
+}
+
 @Composable
 private fun CapturedRow(captured: List<PieceType>, color: PieceColor) {
     if (captured.isEmpty()) {
@@ -418,7 +495,11 @@ private fun CapturedRow(captured: List<PieceType>, color: PieceColor) {
 }
 
 @Composable
-private fun MoveTicker(state: ChessGameUiState, modifier: Modifier = Modifier) {
+private fun MoveTicker(
+    state: ChessGameUiState,
+    onDismissNotice: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val pairs = state.game.movePairs()
     val listState = rememberLazyListState()
 
@@ -433,9 +514,21 @@ private fun MoveTicker(state: ChessGameUiState, modifier: Modifier = Modifier) {
             .background(GeometricSurfaceDark),
         contentAlignment = Alignment.CenterStart
     ) {
-        if (pairs.isEmpty()) {
+        val notice = state.notice
+        if (notice != null) {
             Text(
-                text = "White to start — tap a piece, then its destination",
+                text = notice,
+                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                color = GeometricAccentLavender,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onDismissNotice() }
+                    .padding(horizontal = 12.dp)
+                    .testTag("game_notice")
+            )
+        } else if (pairs.isEmpty()) {
+            Text(
+                text = state.openingHint(),
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.White.copy(alpha = 0.45f),
                 modifier = Modifier.padding(horizontal = 12.dp)
@@ -502,7 +595,7 @@ private fun GameControlBar(
     ) {
         SquareIconButton(
             onClick = onUndo,
-            enabled = state.game.moveCount > 0 || state.isOver,
+            enabled = state.canUndo,
             testTag = "undo_button"
         ) {
             Icon(Icons.Default.Undo, contentDescription = "Take back a move")
@@ -527,11 +620,11 @@ private fun GameControlBar(
 
         TextButton(
             onClick = onOfferDraw,
-            enabled = !state.isOver,
+            enabled = !state.isOver && !state.computerThinking,
             colors = ButtonDefaults.textButtonColors(contentColor = GeometricAccentLavender),
             modifier = Modifier.testTag("draw_button")
         ) {
-            Text("Draw", fontWeight = FontWeight.Bold)
+            Text(if (state.vsComputer) "Offer draw" else "Draw", fontWeight = FontWeight.Bold)
         }
 
         TextButton(
@@ -641,13 +734,15 @@ private fun PromotionDialog(
 @Composable
 private fun NewGameDialog(
     timeControls: List<GameTimeControl>,
-    current: GameTimeControl,
+    currentTimeControl: GameTimeControl,
+    currentSetup: ChessSetup,
     autoFlip: Boolean,
     onToggleAutoFlip: () -> Unit,
-    onStart: (GameTimeControl) -> Unit,
+    onStart: (GameTimeControl, ChessSetup) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var selected by remember { mutableStateOf(current) }
+    var selected by remember { mutableStateOf(currentTimeControl) }
+    var setup by remember { mutableStateOf(currentSetup) }
 
     Dialog(onDismissRequest = onDismiss) {
         DialogCard {
@@ -657,84 +752,157 @@ private fun NewGameDialog(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Pick a time control. Presets are shared with the clock mode.",
+                text = "Who is playing, and on what clock.",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.White.copy(alpha = 0.6f)
             )
             Spacer(modifier = Modifier.height(14.dp))
 
+            // Everything below the heading scrolls as one, so the dialog fits a short screen even
+            // with the computer options showing.
             Column(
                 modifier = Modifier
-                    .height(260.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                    .heightIn(max = 340.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
-                timeControls.forEach { control ->
-                    val isSelected = control.label == selected.label &&
-                        control.initialTimeMs == selected.initialTimeMs
+                SectionLabel("Opponent")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ChessOpponent.entries.forEach { option ->
+                        ChoiceChip(
+                            label = option.label,
+                            selected = setup.opponent == option,
+                            onClick = { setup = setup.copy(opponent = option) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("opponent_${option.name.lowercase()}")
+                        )
+                    }
+                }
+
+                if (setup.vsComputer) {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    SectionLabel("Difficulty")
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(
-                                if (isSelected) {
-                                    GeometricAccentLavender.copy(alpha = 0.16f)
-                                } else {
-                                    Color.White.copy(alpha = 0.04f)
-                                }
-                            )
-                            .border(
-                                1.dp,
-                                if (isSelected) GeometricAccentLavender else Color.Transparent,
-                                RoundedCornerShape(12.dp)
-                            )
-                            .clickable { selected = control }
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = control.label,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                color = if (isSelected) GeometricAccentLavender else Color.White
+                        ChessDifficulty.entries.forEach { level ->
+                            ChoiceChip(
+                                label = level.label,
+                                selected = setup.difficulty == level,
+                                onClick = { setup = setup.copy(difficulty = level) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("difficulty_${level.name.lowercase()}")
                             )
-                            Text(
-                                text = control.describe(),
-                                fontSize = 12.sp,
-                                color = Color.White.copy(alpha = 0.5f)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = setup.difficulty.blurb,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.5f),
+                        modifier = Modifier.testTag("difficulty_blurb")
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+                    SectionLabel("You play")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ChessSide.entries.forEach { side ->
+                            ChoiceChip(
+                                label = side.label,
+                                selected = setup.side == side,
+                                onClick = { setup = setup.copy(side = side) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("side_${side.name.lowercase()}")
                             )
                         }
                     }
                 }
-            }
 
-            HorizontalDivider(
-                color = Color.White.copy(alpha = 0.1f),
-                modifier = Modifier.padding(vertical = 12.dp)
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Rotate board each move", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    Text(
-                        text = "For passing one phone back and forth",
-                        fontSize = 11.sp,
-                        color = Color.White.copy(alpha = 0.5f)
-                    )
+                Spacer(modifier = Modifier.height(14.dp))
+                SectionLabel("Time control")
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    timeControls.forEach { control ->
+                        val isSelected = control.label == selected.label &&
+                            control.initialTimeMs == selected.initialTimeMs
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (isSelected) {
+                                        GeometricAccentLavender.copy(alpha = 0.16f)
+                                    } else {
+                                        Color.White.copy(alpha = 0.04f)
+                                    }
+                                )
+                                .border(
+                                    1.dp,
+                                    if (isSelected) GeometricAccentLavender else Color.Transparent,
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .clickable { selected = control }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = control.label,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = if (isSelected) GeometricAccentLavender else Color.White
+                                )
+                                Text(
+                                    text = control.describe(),
+                                    fontSize = 12.sp,
+                                    color = Color.White.copy(alpha = 0.5f)
+                                )
+                            }
+                        }
+                    }
                 }
-                Switch(
-                    checked = autoFlip,
-                    onCheckedChange = { onToggleAutoFlip() },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = GeometricPurpleDark,
-                        checkedTrackColor = GeometricAccentLavender
-                    ),
-                    modifier = Modifier.testTag("auto_flip_switch")
-                )
+
+                // Passing the phone round is a two-player idea; there is nobody to pass it to here.
+                if (!setup.vsComputer) {
+                    HorizontalDivider(
+                        color = Color.White.copy(alpha = 0.1f),
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Rotate board each move",
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp
+                            )
+                            Text(
+                                text = "For passing one phone back and forth",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.5f)
+                            )
+                        }
+                        Switch(
+                            checked = autoFlip,
+                            onCheckedChange = { onToggleAutoFlip() },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = GeometricPurpleDark,
+                                checkedTrackColor = GeometricAccentLavender
+                            ),
+                            modifier = Modifier.testTag("auto_flip_switch")
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -748,7 +916,7 @@ private fun NewGameDialog(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(
-                    onClick = { onStart(selected) },
+                    onClick = { onStart(selected, setup) },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = GeometricAccentLavender,
                         contentColor = GeometricPurpleDark
@@ -760,6 +928,55 @@ private fun NewGameDialog(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text = text.uppercase(),
+        style = MaterialTheme.typography.labelSmall.copy(
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.4.sp
+        ),
+        color = Color.White.copy(alpha = 0.45f),
+        modifier = Modifier.padding(bottom = 6.dp)
+    )
+}
+
+/** One option in a row of mutually exclusive choices. */
+@Composable
+private fun ChoiceChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (selected) {
+                    GeometricAccentLavender.copy(alpha = 0.18f)
+                } else {
+                    Color.White.copy(alpha = 0.04f)
+                }
+            )
+            .border(
+                1.dp,
+                if (selected) GeometricAccentLavender else Color.White.copy(alpha = 0.08f),
+                RoundedCornerShape(12.dp)
+            )
+            .clickable { onClick() }
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            fontSize = 13.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) GeometricAccentLavender else Color.White.copy(alpha = 0.75f)
+        )
     }
 }
 
@@ -893,9 +1110,19 @@ internal fun ChessGameUiState.statusLine(): String {
     return when {
         result != null -> "${result.headline()} · ${result.scoreLine}"
         isPaused -> "Paused"
+        computerThinking -> "Computer is thinking…"
         game.isCheck -> "${sideToMove.displayName} is in check"
+        vsComputer && isComputerTurn -> "Computer to move"
+        vsComputer -> "Your move"
         else -> "${sideToMove.displayName} to move"
     }
+}
+
+/** The line shown before the first move is played. */
+internal fun ChessGameUiState.openingHint(): String = when {
+    !vsComputer -> "White to start — tap a piece, then its destination"
+    setup.humanColor == PieceColor.WHITE -> "You are White — tap a piece, then its destination"
+    else -> "You are Black — the computer opens"
 }
 
 internal fun GameResult.headline(): String = when (outcome) {
