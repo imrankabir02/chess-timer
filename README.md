@@ -1,6 +1,6 @@
 # Chess Clock ⏱️♟️🎲
 
-A beautiful, modern, material-designed Android board-game app. **Play a complete game of chess**, **play Ludo against the computer**, or use the device as a pure tournament clock for a physical board. Built with Jetpack Compose, Kotlin, and Room Database.
+A beautiful, modern, material-designed Android board-game app. **Play a complete game of chess against a friend or the computer**, **play Ludo against the computer**, or use the device as a pure tournament clock for a physical board. Built with Jetpack Compose, Kotlin, and Room Database.
 
 [![Android CI/CD Pipeline](https://github.com/imrankabir02/chess-timer/actions/workflows/android-ci.yml/badge.svg)](https://github.com/imrankabir02/chess-timer/actions/workflows/android-ci.yml)
 [![Download APK](https://img.shields.io/badge/Download-APK-brightgreen.svg?style=flat-square)](https://github.com/imrankabir02/chess-timer/actions/runs/26327206712/artifacts/7175400862)
@@ -20,14 +20,18 @@ The home screen offers three modes.
 
 ### ♟️ Play chess
 
-A complete, rules-correct game of chess for two players on one device.
+A complete, rules-correct game of chess — against the person next to you, or against the computer.
 
+- **Two players or one**: pick your opponent when the game starts. Two players share the device as before; against the computer the board is yours alone and it answers every move.
+- **Three levels**: *easy* looks a single move ahead — it will take anything you leave hanging, and hangs plenty itself. *Medium* looks two moves ahead and follows every capture through to the end, so loose pieces get punished. *Hard* searches four moves deep and always plays the best line it finds.
+- **Either colour**: play White, play Black, or let it be drawn at random. Choose Black and the board turns round and the computer opens.
+- **It knows when it is beaten**: offer a draw and it weighs the position up before answering — and the harder levels are a good deal less willing to split the point.
 - **Every rule implemented**: legal move generation with pins and checks, castling (including the "may not castle through check" restrictions), en passant, and under-promotion to any piece.
 - **All the endings**: checkmate, stalemate, the fifty-move rule, threefold repetition, insufficient material, resignation, agreed draws, and flag fall — including the FIDE rule that a flag fall against a player who cannot possibly mate is only a draw.
 - **Tap to move**: tap a piece to see its legal destinations, tap a destination to play. Last move, selection and check are highlighted on the board.
 - **Notation and material**: a live move list in standard algebraic notation (with proper disambiguation), captured pieces, and the running material balance for each side.
 - **Both clocks on the board**: every time control from the clock mode works here too, or play untimed.
-- **Take back**: undo rewinds the board *and* both clocks, one half-move at a time.
+- **Take back**: undo rewinds the board *and* both clocks, one half-move at a time — or two against the computer, so the move comes back to you rather than straight to it.
 - **Board orientation**: flip manually, or turn on auto-flip to rotate the board for whoever is on move when passing one phone back and forth.
 
 ### 🎲 Play ludo
@@ -77,9 +81,39 @@ unit tested directly on the JVM:
 | `Position.kt` | Immutable board, attack detection, legal move generation, FEN in and out |
 | `San.kt` | Standard algebraic notation, written and parsed |
 | `ChessGame.kt` | Move history, undo, and every way a game can end |
+| `Evaluation.kt` | What a position is worth, in centipawns |
+| `ChessBot.kt` | The search, and the three difficulty levels laid over it |
 
 Positions are immutable — playing a move returns a new one — which is what makes undo, threefold
 repetition detection and board review fall out for free.
+
+### The computer opponent
+
+`ChessBot` is a negamax search with alpha-beta pruning. `Evaluation` scores a leaf from material,
+piece-square tables, the bishop pair and pawn structure, and the three levels are the same search
+with different dials:
+
+| | Depth | Quiescence | Plays the best move |
+| --- | --- | --- | --- |
+| Easy | 1 ply | no | not always — it picks from the near-best |
+| Medium | 2 plies | yes | usually |
+| Hard | 4 plies | yes | always |
+
+Quiescence is what makes the difference felt. Without it a search stops in the middle of a trade and
+scores a position it has no business scoring, which is precisely why easy hangs pieces: it sees that
+it can take yours, and not that you can take back.
+
+The evaluation carries one term that is not about the position at all. Once a side is a rook up
+against a bare king, material and the tables are flat everywhere and a four-ply search has no reason
+to make progress — a won game shuffles about until the fifty-move rule declares it drawn. So above
+that margin the score picks up a term that drives the losing king to the edge and walks the winning
+king towards it, and the game finishes.
+
+The bot never rolls a die of its own: the randomness is a `kotlin.random.Random` passed in, so a
+seeded bot plays the same game every time and `ChessBotTest` can assert on real games. The tests
+check that every level finds mate in one, that only the deepest finds a forced mate in two, that the
+harder level beats the easier one with both colours, and that king and queen against a bare king
+actually ends in checkmate.
 
 ### The Ludo engine
 
